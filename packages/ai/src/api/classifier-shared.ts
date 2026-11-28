@@ -1,8 +1,16 @@
 import { calculateCost } from "../models.ts";
-import type { ClassifierApi, ClassifierModel, ClassifierOptions, ProviderHeaders, Usage } from "../types.ts";
+import type {
+	ClassifierApi,
+	ClassifierModel,
+	ClassifierOptions,
+	ClassifierResult,
+	ProviderHeaders,
+	Usage,
+} from "../types.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
+import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { findTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
 
@@ -51,6 +59,30 @@ function transportError(cause: Error): ClassifierHttpError {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function classifierHttpErrorCode(error: Error): string | undefined {
+	if (!("body" in error) || typeof error.body !== "string") return undefined;
+	try {
+		const body: unknown = JSON.parse(error.body);
+		if (!isRecord(body)) return undefined;
+		const failure = isRecord(body.error) ? body.error : body;
+		if (typeof failure.code === "string" && failure.code) return failure.code;
+		return typeof failure.type === "string" ? failure.type : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+export function recordClassifierFailure(result: ClassifierResult, error: unknown): void {
+	if (!(error instanceof Error) || result.stopReason !== "error") return;
+	if ("status" in error && typeof error.status === "number") result.status = error.status;
+	// The server-delay-cap error keeps the original HTTP error as its cause.
+	const original = "retryAfterMs" in error && error.cause instanceof Error ? error.cause : error;
+	const code = classifierHttpErrorCode(original);
+	const retryAfterMs = getProviderRetryAfterMs(error);
+	if (code !== undefined) result.code = code;
+	if (retryAfterMs !== undefined) result.retryAfterMs = retryAfterMs;
 }
 
 export function requiredNumber(label: string, value: unknown, field: string): number {

@@ -255,6 +255,8 @@ Built-in classifiers:
 
 Open `/settings` → **Decision model** or run `models.getAvailableOfType("classifier")` in codemode to see every classifier available for your authenticated providers.
 
+Built-in classifiers do not retry when the provider reports that your account is out of quota. Temporary throttles can still retry if the provider's requested wait fits within the [retry limit](/settings#retries-outside-chat). If you call `models.classify()` directly, failure results include `retryAfterMs` when the provider supplied a delay, even if it exceeded the limit. SDK callers can set the limit with `maxRetryDelayMs` (60,000 ms by default, `0` to disable it). If your quota is exhausted, wait for it to reset, replenish it, or choose a different provider.
+
 TypeSafe's **System One** classifier protocol (`/v1/systemone`)—also used by Cloudflare Workers AI, OpenRouter, GitHub Copilot, and Vercel AI Gateway classifiers—accepts different image request layouts depending on the host, controlled by `compat.imageInput` (`"assets"`, `"images"`, or `"state-image-urls"`). Built-in entries configure this automatically, so overriding `baseUrl` preserves it. For a custom proxy targeting another classifier service, set `imageInput` and `sendImageOptInHeader` in provider-level `compat` (for example, a proxy in front of OpenRouter needs `"imageInput": "state-image-urls"` and `"sendImageOptInHeader": false` so OpenRouter does not silently drop images). See [System One compatibility](/models-configuration#typesafe-system-one).
 
 ## Use image models {#use-image-models}
@@ -271,6 +273,7 @@ Built-in image providers:
 - **OpenRouter (`openrouter`):**
   - Reuses your OpenRouter credential (`/login openrouter` or `OPENROUTER_API_KEY`).
   - Exposes multi-vendor image models through OpenRouter's image generation API—such as `google/gemini-2.5-flash-image`, `google/gemini-3-pro-image`, `black-forest-labs/flux.2-pro`, `black-forest-labs/flux-3-image`, `openai/gpt-image-2.6-flare`, and `recraft/recraft-v4-pro-vector`. OpenAI-specific `ImagesOptions` are ignored by OpenRouter image models.
+  - If OpenRouter says the account is out of quota, Atomic returns the error without retrying. Wait for the quota to reset, replenish it, or use another provider. Temporary throttles can still retry if an SDK caller sets `maxRetries` above its default of `0` and the requested wait is within `maxRetryDelayMs` (60,000 ms by default).
 
 Example in [codemode](/codemode#generate-images):
 

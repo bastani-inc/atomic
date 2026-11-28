@@ -382,6 +382,20 @@ Full retry settings example:
 }
 ```
 
+### Retries outside chat
+
+Structured decisions (including classifier requests) and session or branch summaries stop retrying the current model if its account is out of quota or the server asks for a delay longer than `retry.provider.maxRetryDelayMs` (60,000 ms by default). They do not shorten the server's wait and resend early. A structured decision can still use an eligible fallback; summaries do not use the chat fallback chain.
+
+For example, to allow a server-requested wait of at most 15 seconds, use this in `settings.json`:
+
+```json
+{
+  "retry": { "provider": { "maxRetryDelayMs": 15000 } }
+}
+```
+
+Setting `retry.provider.maxRetryDelayMs` to `0` allows the full server-requested wait, subject to any request deadline. `retry.maxAgentDelayMs` caps the delay Atomic chooses when there is no server hint; it does not shorten a server-requested wait. Neither setting lets Atomic retry an exhausted quota. [Remote compactors](/compaction/custom-compactors#automatic-fallback-to-memory-compaction) make one request and fall back to memory compaction on failure. [OpenRouter image generation](/models#use-image-models) also stops on quota exhaustion, even if the SDK caller has enabled retries.
+
 ## Tools
 
 | Setting | Type | Default | Description |

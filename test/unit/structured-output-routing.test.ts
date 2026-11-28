@@ -9,6 +9,7 @@ import type {
 	ModelsClassifierOptions,
 } from "@bastani/atomic-ai";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@bastani/atomic-ai";
+import { classify as classifyTypeSafe } from "@bastani/atomic-ai/api/typesafe-system-one";
 import { builtinModels } from "@bastani/atomic-ai/providers/all";
 import { Type } from "typebox";
 import { afterEach, test, vi } from "vitest";
@@ -639,6 +640,30 @@ test("a classifier router's 429 keeps its status, code and retry hint without it
 		);
 		return true;
 	});
+});
+
+test("a classifier decision preserves over-cap retry advice without making a second request (#6783)", async () => {
+	const fetch = vi.fn(async () =>
+		Response.json(
+			{ error: { code: "rate_limit_exceeded", message: "private upstream data" } },
+			{ status: 429, headers: { "Retry-After": "0.010" } },
+		),
+	);
+	const request = classifierRequest((model, context, options) =>
+		classifyTypeSafe(model, context, {
+			...options,
+			apiKey: "test-key",
+			fetch: fetch as unknown as typeof globalThis.fetch,
+		}),
+	);
+	await assert.rejects(routeModel({ ...request, retry: { ...FAST_RETRY, maxRetryDelayMs: 1 } }), (error: Error) => {
+		assert.doesNotMatch(String(error.stack), /private upstream data/);
+		assert.equal(Reflect.get(error, "status"), 429);
+		assert.equal(Reflect.get(error, "code"), "rate_limit_exceeded");
+		assert.equal(Reflect.get(error, "retryAfterMs"), 10);
+		return true;
+	});
+	assert.equal(fetch.mock.calls.length, 1);
 });
 
 test("a classifier router's exhausted quota keeps its 402 status and code (#4031)", async () => {

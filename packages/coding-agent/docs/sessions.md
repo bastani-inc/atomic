@@ -111,7 +111,7 @@ Press `Ctrl+S` to cycle sort modes: **Threaded** (default; groups forks under th
 
 Once the agent goes idle, Atomic generates a one-line summary using the session's active model. Summaries run for saved interactive and RPC sessions and skip `--no-session`, `-p`, JSON mode, internal sessions, and sessions with fewer than 4 entries on the active branch.
 
-Summary generation feeds up to 4,000 tokens of recent conversation, caps the stored line at 160 characters (truncated with `…`), counts toward session usage, cancels on new input or exit, and retires on a later branch summary. Disable summaries with `"sessionSummary": { "enabled": false }`.
+Summary generation feeds up to 4,000 tokens of recent conversation, caps the stored line at 160 characters (truncated with `…`), counts toward session usage, cancels on new input or exit, and retires on a later branch summary. If the account is out of quota or the server asks for a wait longer than the [retry limit](/settings#retries-outside-chat), Atomic skips that summary. The session remains available in the picker. To turn off summaries, set `"sessionSummary": { "enabled": false }`.
 
 ### Internal and subagent sessions
 

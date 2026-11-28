@@ -32,6 +32,7 @@
 - Fixed a crash when quitting Atomic on macOS if optional stall diagnostics were collecting stack traces ([#6787](https://github.com/bastani-inc/atomic/issues/6787)).
 - Chat skips exhausted accounts and server-requested waits above your retry limit, including on OpenAI-compatible gateways and Amazon Bedrock. It now follows your fallback preference for Gemini and Anthropic safety stops and moves past unavailable models or incompatible requests reported by custom gateways; no settings changes are needed ([#6780](https://github.com/bastani-inc/atomic/issues/6780)).
 - Classifier decisions in extensions now use your configured server retry delay cap instead of the default cap. No settings changes are needed ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
+- Structured decisions and summaries stop retrying a model when its quota is exhausted or the provider asks for a wait longer than the configured retry limit. Decision errors keep the provider's retry advice, and remote compaction reports exhausted quota as not retryable, without any settings changes ([#6783](https://github.com/bastani-inc/atomic/issues/6783)).
 
 ## [0.10.15] - 2026-11-27
 

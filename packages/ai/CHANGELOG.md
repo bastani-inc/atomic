@@ -17,6 +17,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 - Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.
 - OpenAI-compatible requests stop retrying when the account has run out of quota. Server errors now honor retry waits in the response body, and Bedrock stops retrying when the requested wait exceeds your limit; no settings changes are needed.
 - Z.ai and Zhipu Coding CN can now trace each request attempt, including retries, using a unique ID ([#6798](https://github.com/bastani-inc/atomic/issues/6798)).
+- Classifiers and OpenRouter image generation no longer retry when the account is out of quota, without any settings changes. Classifiers also report how long the provider asked callers to wait, even when that wait exceeds the retry limit ([#6783](https://github.com/bastani-inc/atomic/issues/6783)).
 
 ## [0.10.11] - 2026-11-27
 

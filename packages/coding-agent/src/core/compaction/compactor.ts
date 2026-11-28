@@ -4,6 +4,7 @@ import type { CompactorApi } from "@bastani/atomic-ai";
 import type { Usage } from "@bastani/atomic-ai/compat";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { messageIsLlmVisible } from "../messages.ts";
+import { normalizeModelFailureSignal } from "../model-fallback-failures.ts";
 import { CompactionCancelledError, CompactorFailure } from "./errors.js";
 
 export { CompactorFailure };
@@ -188,14 +189,13 @@ async function readHttpErrorBody(response: Response): Promise<string> {
 	}
 }
 
-async function httpErrorMessage(response: Response, secrets: readonly string[]): Promise<string> {
-	const body = await readHttpErrorBody(response);
+function httpErrorMessage(status: number, body: string, secrets: readonly string[]): string {
 	const excerpt = redact(body, secrets)
 		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
 		.replace(/\s+/g, " ")
 		.trim()
 		.slice(0, HTTP_ERROR_EXCERPT_MAX_CHARS);
-	return `HTTP ${response.status}${excerpt ? `: ${excerpt}` : ""}`;
+	return `HTTP ${status}${excerpt ? `: ${excerpt}` : ""}`;
 }
 
 interface CompactorResponse {
@@ -375,7 +375,7 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 	const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
 	const failure = (
 		error: Error | string,
-		options?: { code?: "http-error" | "network-error"; status?: number },
+		options?: { code?: "http-error" | "network-error"; status?: number; retryable?: boolean },
 	): never => {
 		if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
 		if (request.stop?.aborted) {
@@ -391,7 +391,8 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 		const message = typeof error === "string" ? error : error.message || error.name;
 		throw new CompactorFailure(redact(message, secrets), {
 			code: options?.code ?? "network-error",
-			...(options?.status !== undefined ? { status: options.status } : {}),
+			status: options?.status,
+			retryable: options?.retryable,
 			model: request.modelId,
 		});
 	};
@@ -416,7 +417,14 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 		return failure(`${describeWithCauses(error)}${hint}`, { code: "network-error" });
 	}
 	if (!response.ok) {
-		return failure(await httpErrorMessage(response, secrets), { code: "http-error", status: response.status });
+		const { status } = response;
+		const body = await readHttpErrorBody(response);
+		const quotaExhausted = normalizeModelFailureSignal({ status, message: body }).kind === "quota_exhausted";
+		return failure(httpErrorMessage(status, body, secrets), {
+			code: "http-error",
+			status,
+			retryable: quotaExhausted ? false : undefined,
+		});
 	}
 	let body: CompactorResponse;
 	try {

@@ -122,7 +122,7 @@ For the exact HTTP payload, header, token estimator, and response contract, see 
 
 ## Automatic fallback to memory compaction
 
-Every compactor failure falls back automatically to **Automatic** ([memory compaction](/compaction/memory-compaction)) so a broken, unauthenticated, or slow remote endpoint never blocks a session:
+Every compactor failure falls back automatically to **Automatic** ([memory compaction](/compaction/memory-compaction)) so a broken, unauthenticated, or slow remote endpoint never blocks a session. Atomic does not retry the remote request. If the endpoint reports that your quota is exhausted, the SDK also marks that failure as not retryable; wait for the quota to reset or replenish it before trying remote compaction again. No settings change is needed for fallback:
 
 ```text
 Compaction starts

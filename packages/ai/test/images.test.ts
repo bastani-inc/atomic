@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getFixtureImageModel } from "../../../test/helpers/catalog-model-fixtures.ts";
 
 import { generateImages } from "../src/images.ts";
@@ -48,6 +49,22 @@ async function handleImageInput<TApi extends string>(model: ImageModel<TApi>, op
 	expect(response.stopReason, `Error: ${response.errorMessage}`).toBe("stop");
 	expect(response.output.some((item) => item.type === "image")).toBe(true);
 }
+
+it.each([
+	["insufficient_quota", 1],
+	["rate_limit_exceeded", 2],
+] as const)("OpenRouter Images sends %s HTTP 429 only %s time(s) with one retry allowed (#6783)", async (code, attempts) => {
+	const model = getFixtureImageModel("openrouter", "google/gemini-2.5-flash-image");
+	const fetch = vi.fn(async () => Response.json(
+		{ error: { type: code, code, message: "Request rejected" } },
+		{ status: 429, headers: { "Retry-After": "0.001" } },
+	));
+	const result = await generateImages(model, { input: [{ type: "text", text: "Draw a circle" }] }, {
+		apiKey: "test-key", maxRetries: 1, fetch,
+	});
+	assert.equal(result.stopReason, "error");
+	assert.equal(fetch.mock.calls.length, attempts);
+});
 
 describe("Images E2E Tests", () => {
 	describe.skipIf(!process.env.OPENROUTER_API_KEY)(
