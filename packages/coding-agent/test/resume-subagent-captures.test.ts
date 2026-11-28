@@ -258,17 +258,16 @@ test("a snapshot the session records while its subagents' captures are compared 
 	sandbox.write(join(clone, "work.txt"), "child\n");
 	await finished(await capture(child, store, clone));
 	const reopened = await SessionManager.open(store, parent.getSessionId());
-	const open = SessionManager.prototype.openSessionById;
+	const projectCaptures = store.readBranchSnapshotMetadata.bind(store);
 	let recorded: string | undefined;
-	const reading = vi.spyOn(SessionManager.prototype, "openSessionById").mockImplementation(async function (
-		this: SessionManager,
-		...args: Parameters<typeof open>
-	) {
-		// The session records a capture of its own while the subagent's session is being read.
+	const reading = vi.spyOn(store, "readBranchSnapshotMetadata").mockImplementationOnce(async (ids) => {
+		const candidates = await projectCaptures(ids);
+		assert.ok(candidates.get(child.getSessionId())?.entries.some((entry) => entry.capture));
+		// The session records a newer capture after the store chose the child candidates but before adoption.
 		sandbox.write(join(clone, "work.txt"), "parent later\n");
 		await capture(reopened, store, clone);
 		recorded = reopened.getLatestWorktreeSnapshots().get(clone)?.id;
-		return open.apply(this, args);
+		return candidates;
 	});
 	try {
 		const options = sessionResumeOptions(
