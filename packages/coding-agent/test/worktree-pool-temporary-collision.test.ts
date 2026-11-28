@@ -120,7 +120,9 @@ test("an admission whose every temporary record name is taken fails without touc
 	assert.equal(readFileSync(temporary, "utf8"), SENTINEL);
 	assert.equal(existsSync(join(dirname(temporary), "0.json")), false);
 	assert.deepEqual(
-		readdirSync(dirname(temporary)).filter((name) => name.startsWith("0.json")),
+		readdirSync(dirname(temporary)).filter(
+			(name) => name.startsWith("0.json") && name !== "0.json.lock.takeover.lock",
+		),
 		[`0.json.${COLLIDING}.tmp`],
 	);
 });

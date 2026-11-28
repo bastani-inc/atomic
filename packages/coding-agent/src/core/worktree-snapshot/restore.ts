@@ -18,7 +18,6 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { pathExists } from "../../utils/path-exists.ts";
-import { asyncScope } from "../async-scope.ts";
 import { takeOverDeadHolderAsync } from "../lock-holder.js";
 import { releaseLock } from "../lock-release.ts";
 import { lockHolderAsync, takeTakeoverMutexAsync } from "../lock-takeover.js";
@@ -71,7 +70,7 @@ import {
 	type WorktreeSnapshotSettingsInput,
 } from "./settings.ts";
 import { lockShared } from "./shared-clock.ts";
-import { lockSharedWithHolder } from "./shared-lock.ts";
+import { lockSharedWithHolder, reportWorktreeLockProgress } from "./shared-lock.js";
 import type {
 	SnapshotBlobStore,
 	WorkspaceBinding,
@@ -259,12 +258,6 @@ const REPOSITORY_LOCK_UPDATE_MS = 10_000;
 const REPOSITORY_LOCK_POLL_MS = 50;
 /** Don't announce brief contention, such as two restores entering the store just to read its refs. */
 const REPOSITORY_LOCK_NOTICE_MS = 500;
-const repositoryLockProgress = asyncScope<(message: string) => void>();
-
-/** Sends repository-lock progress to the resume UI rather than writing over it on stderr. */
-export function withRepositoryLockProgress<T>(onProgress: ((message: string) => void) | undefined, run: () => T): T {
-	return onProgress === undefined ? run() : repositoryLockProgress.run(onProgress, run);
-}
 /** How long, on Windows, the repository lock is tried again while its directory is refused with EPERM. */
 export const REPOSITORY_LOCK_REFUSED_MS = 10_000;
 
@@ -334,8 +327,7 @@ async function lockRepository(
 				waitingSince ??= performance.now();
 				if (!announced && performance.now() - waitingSince >= REPOSITORY_LOCK_NOTICE_MS) {
 					announced = true;
-					const message = `Waiting for another Atomic process restoring this repository (${store})`;
-					(repositoryLockProgress.getStore() ?? process.emitWarning)(message);
+					reportWorktreeLockProgress(`Waiting for another Atomic process restoring this repository (${store})`);
 				}
 			} else {
 				throw unwritablePathError(lockPath, snapshotId, error);

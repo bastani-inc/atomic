@@ -227,7 +227,11 @@ describe("pooled worktrees and object stores belong to one repository (#4989)", 
 		assert.deepEqual(JSON.parse(readFileSync(recordFile, "utf8")), record);
 		assert.equal(readFileSync(join(legacy, "a.txt"), "utf8"), "A\n");
 		assert.equal(readFileSync(join(legacy, "secrets", "prod-token.json"), "utf8"), SECRET);
-		assert.deepEqual(readdirSync(join(storeDir(), "pool", EMPTY_IDENTITY)).sort(), ["0.json"]);
+		const mutexFile = basename(takeoverLockPath("0.json.lock"));
+		assert.deepEqual(
+			readdirSync(join(storeDir(), "pool", EMPTY_IDENTITY)).filter((name) => name !== mutexFile),
+			["0.json"],
+		);
 	});
 
 	test("a claim never resets a slot whose worktree belongs to another repository's store (#4989)", async () => {

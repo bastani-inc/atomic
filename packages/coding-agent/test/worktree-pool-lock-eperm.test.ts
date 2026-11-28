@@ -91,18 +91,23 @@ const lockRefusals = vi.hoisted(() => ({
 	afterWrite: undefined as ((path: string) => void) | undefined,
 	onRecordWrite: undefined as ((path: string, data: string) => Promise<void>) | undefined,
 	onRemove: undefined as ((path: string) => Promise<void>) | undefined,
+	beforeStat: undefined as ((path: string) => Promise<void>) | undefined,
 }));
 
 vi.mock("../src/core/worktree-snapshot/shared-clock.ts", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/core/worktree-snapshot/shared-clock.js")>();
-	const lockShared: typeof actual.lockShared = (path, options) =>
-		actual.lockShared(path, {
-			...options,
-			onCompromised: (error) => {
-				options.onCompromised?.(error);
-				lockRefusals.onCompromised?.(path);
+	const lockShared: typeof actual.lockShared = (path, options, ...rest) =>
+		actual.lockShared(
+			path,
+			{
+				...options,
+				onCompromised: (error) => {
+					options.onCompromised?.(error);
+					lockRefusals.onCompromised?.(path);
+				},
 			},
-		});
+			...rest,
+		);
 	return {
 		...actual,
 		lockShared,
@@ -122,6 +127,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 		return actual.rm(path, options);
 	};
 	const stat = (async (path: import("node:fs").PathLike, options?: import("node:fs").StatOptions) => {
+		await lockRefusals.beforeStat?.(String(path));
 		const stats = await actual.stat(path, options);
 		if (!pollClock.enabled || !pollClock.filesystem || !/\.clock-[0-9a-f]{16}\.probe$/.test(String(path)))
 			return stats;
@@ -221,6 +227,7 @@ afterEach(() => {
 	lockRefusals.onCompromised = undefined;
 	lockRefusals.onRecordWrite = undefined;
 	lockRefusals.onRemove = undefined;
+	lockRefusals.beforeStat = undefined;
 	lockRefusals.deleteOnCloseUnavailable = false;
 	lockRefusals.afterWrite = undefined;
 	sandbox.dispose();
@@ -743,14 +750,14 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		const ownerB = { kind: "session" as const, id: "owner-b" };
 
 		const storePreHeartbeat = sandbox.path("store-pre-heartbeat");
-		const preSlot0Lock = join(storePreHeartbeat, "pool", repository, "0.json.lock");
+		const preSlot0Record = join(storePreHeartbeat, "pool", repository, "0.json");
 		const preRepoLock = join(storePreHeartbeat, "pool", `${repository}.lock`);
 		let childPre: ReturnType<typeof admissionChild> | undefined;
 		try {
-			lockRefusals.targets.add(preSlot0Lock);
+			// Pause before taking the slot's lock mutex, so the child can actually admit slot 0.
 			let pausedOnce = false;
-			lockRefusals.onAttempt = async (_attempt, target) => {
-				if (target !== preSlot0Lock || pausedOnce) return false;
+			lockRefusals.beforeStat = async (target) => {
+				if (target !== preSlot0Record || pausedOnce) return;
 				pausedOnce = true;
 				rmSync(preRepoLock, { recursive: true, force: true });
 				const admissionB = { storeDir: storePreHeartbeat, remotes, lastState: state, envHash: "env" };
@@ -768,7 +775,6 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 				const line = await childPre.nextLine();
 				const childLease = JSON.parse(line) as { slot: number; path: string };
 				assert.equal(childLease.slot, 0);
-				return false;
 			};
 			const leaseA = await admitPooledWorktree(
 				{ storeDir: storePreHeartbeat, remotes, lastState: state, envHash: "env" },
@@ -788,7 +794,7 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 		}
 
 		const storeCompromised = sandbox.path("store-compromised");
-		const compSlot0Lock = join(storeCompromised, "pool", repository, "0.json.lock");
+		const compSlot0Record = join(storeCompromised, "pool", repository, "0.json");
 		const compRepoLock = join(storeCompromised, "pool", `${repository}.lock`);
 		const realSetTimeout = globalThis.setTimeout;
 		const timeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
@@ -806,11 +812,9 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 			};
 		});
 		try {
-			lockRefusals.targets.clear();
-			lockRefusals.targets.add(compSlot0Lock);
 			let pausedComp = false;
-			lockRefusals.onAttempt = async (_attempt, target) => {
-				if (target !== compSlot0Lock || pausedComp) return false;
+			lockRefusals.beforeStat = async (target) => {
+				if (target !== compSlot0Record || pausedComp) return;
 				pausedComp = true;
 				rmSync(compRepoLock, { recursive: true, force: true });
 				const admissionB = { storeDir: storeCompromised, remotes, lastState: state, envHash: "env" };
@@ -829,7 +833,6 @@ describe("worktree pool and seed locks on Windows when a lock directory is brief
 				const childLease = JSON.parse(line) as { slot: number; path: string };
 				assert.equal(childLease.slot, 0);
 				await compromised;
-				return false;
 			};
 			await assert.rejects(
 				admitPooledWorktree({ storeDir: storeCompromised, remotes, lastState: state, envHash: "env" }, ownerA),
