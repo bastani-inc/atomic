@@ -2749,13 +2749,8 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 		assertActive();
 		await timeRestorePhase("publish", () =>
 			withRepositoryLock(store, snapshotId, signal, () =>
-				withPublicationFence(
-					store,
-					path,
-					staging,
-					signal,
-					repositoryLockProgress.getStore() ?? process.emitWarning,
-					(started, targetIdentity) => moveIntoPlace(publish, record, snapshotId, moving, started, targetIdentity),
+				withPublicationFence(store, path, staging, signal, reportWorktreeLockProgress, (started, targetIdentity) =>
+					moveIntoPlace(publish, record, snapshotId, moving, started, targetIdentity),
 				),
 			),
 		);
