@@ -264,21 +264,30 @@ test("an old holder's release does not remove a replacement lock directory (#680
 	assert.ok(existsSync(lockPath), "the old holder removed the replacement's lock");
 });
 
-test.each(["case", "symlink"] as const)(
-	"a live publication fence also covers a %s alias of the target (#6805)",
-	async (alias) => {
+test.each([
+	{ kind: "case", first: "MixedCase", second: "mixedcase" },
+	{ kind: "Unicode case", first: "Straße", second: "STRAẞE" },
+	{ kind: "Unicode normalization", first: "caf\u00e9", second: "cafe\u0301" },
+	{ kind: "symlink", first: "Destination", second: "Destination" },
+])(
+	"a publication fence follows the destination filesystem's $kind alias rules (#6805)",
+	async ({ kind, first: name, second: alternateName }) => {
 		const originalParent = sandbox.path("parents");
 		const aliasedParent = sandbox.path("parents-alias");
 		const store = join(originalParent, "repo.git");
 		mkdirSync(store, { recursive: true });
-		const target = join(originalParent, "Destination");
+		const target = join(originalParent, name);
 		let alternateStore = store;
-		let aliasPath = join(originalParent, "destination");
-		if (alias === "symlink") {
+		let aliasPath = join(originalParent, alternateName);
+		if (kind === "symlink") {
 			symlinkSync(originalParent, aliasedParent, process.platform === "win32" ? "junction" : "dir");
 			alternateStore = join(aliasedParent, "repo.git");
-			aliasPath = join(aliasedParent, "Destination");
+			aliasPath = join(aliasedParent, alternateName);
 		}
+		// Observe the volume's own comparison, then test publication when the checkout is absent.
+		mkdirSync(target);
+		const aliases = existsSync(aliasPath);
+		rmSync(target, { recursive: true });
 		let release!: () => void;
 		let held!: () => void;
 		const holding = new Promise<void>((resolve) => {
@@ -303,17 +312,16 @@ test.each(["case", "symlink"] as const)(
 		const waiting = new Error("waiting on the original publication");
 		try {
 			await Promise.race([holding, first]);
-			await assert.rejects(
-				withPublicationFence(
-					alternateStore,
-					aliasPath,
-					"staging-second",
-					controller.signal,
-					() => controller.abort(waiting),
-					async () => assert.fail("alias bypassed the existing fence"),
-				),
-				waiting,
+			const second = withPublicationFence(
+				alternateStore,
+				aliasPath,
+				"staging-second",
+				controller.signal,
+				() => controller.abort(waiting),
+				async () => "admitted",
 			);
+			if (aliases) await assert.rejects(second, waiting);
+			else assert.equal(await second, "admitted", "distinct destinations should not block each other");
 		} finally {
 			release();
 			await first;

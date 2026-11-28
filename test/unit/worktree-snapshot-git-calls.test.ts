@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
+import { snapshotGitLaunch, startHostProcessesThroughChildProcess } from "../helpers/host-spawn.js";
 
 const recorded = vi.hoisted(() => ({
 	spawns: [] as { args: readonly string[]; cwd: string }[],
@@ -20,7 +20,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 	return {
 		...actual,
 		spawn: (command: string, args: readonly string[], options: { cwd?: string }) => {
-			recorded.spawns.push({ args, cwd: String(options?.cwd) });
+			recorded.spawns.push({ args: snapshotGitLaunch(command, args).args, cwd: String(options?.cwd) });
 			return (actual.spawn as (...parameters: unknown[]) => unknown)(command, args, options);
 		},
 	};

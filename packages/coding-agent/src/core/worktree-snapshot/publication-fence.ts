@@ -1,13 +1,12 @@
-import { randomUUID } from "node:crypto";
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { lstat, mkdir, readFile, realpath, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { type ProcessRecord, processMayRunAsync } from "../lock-takeover.js";
+import { lockHolderAsync, type ProcessRecord, processMayRunAsync } from "../lock-takeover.js";
 import { processStartTokenAsync } from "../process-start-token.js";
 import { renameWithRetry } from "../rename-retry.ts";
-import { sha256Hex } from "./env-hash.ts";
-import { WorkspaceGitError } from "./errors.ts";
+import { unreadablePathError, WorkspaceGitError } from "./errors.ts";
 import { canonicalizeWorktreePathAsync } from "./paths.ts";
 
 /** The window for the host-death guardian to finish an orphan before reporting a blocked publication. */
@@ -21,12 +20,48 @@ interface PublicationFence {
 	readonly git?: ProcessRecord;
 }
 
-async function fencePath(target: string): Promise<string> {
-	// Put the fence in the physical parent (including on-disk case), not in a store chosen by the caller.
-	// The destination may not exist yet; conservatively join case and Unicode aliases of its basename.
-	const parent = await canonicalizeWorktreePathAsync(dirname(target));
-	const key = sha256Hex(basename(target).normalize("NFD").toUpperCase()).slice(0, 24);
-	return join(parent, `.atomic-publication-${key}`);
+interface PublicationDestination {
+	readonly file: string;
+	readonly targetIdentity: string | undefined;
+}
+
+async function locateDestination(target: string): Promise<PublicationDestination> {
+	const existing = await realpath(target).catch((error: NodeJS.ErrnoException) => {
+		if (error.code !== "ENOENT") throw unreadablePathError(target, error);
+		return undefined;
+	});
+	const parent = existing === undefined ? await canonicalizeWorktreePathAsync(dirname(target)) : dirname(existing);
+	const name = basename(existing ?? target);
+	// Use the exact basename on the destination filesystem. Its comparison, not a JavaScript case fold,
+	// decides whether two spellings name the same checkout. An existing checkout supplies its on-disk spelling.
+	const fenceDirectory = name.toUpperCase() === ".ATOMIC-FENCE" ? ".atomic-fence-alt" : ".atomic-fence";
+	return {
+		file: join(parent, fenceDirectory, name),
+		targetIdentity: existing === undefined ? undefined : await lockHolderAsync(existing),
+	};
+}
+
+async function createFence(file: string, fence: PublicationFence): Promise<void> {
+	const directory = dirname(file);
+	for (let attempt = 1; ; attempt++) {
+		await mkdir(directory, { recursive: true, mode: 0o700 });
+		try {
+			// Don't let a symlink redirect the fence to a filesystem with different name equivalence.
+			if (!(await lstat(directory)).isDirectory())
+				throw new Error(`not a publication fence directory: ${directory}`);
+			await writeFile(file, JSON.stringify(fence), { flag: "wx", mode: 0o600 });
+			return;
+		} catch (error) {
+			// A concurrent publisher can remove the empty directory before our exclusive create.
+			if (attempt === 4 || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+}
+
+async function removeFence(file: string): Promise<void> {
+	await rm(file, { force: true });
+	// A nonempty directory holds another publication's fence; leave it in place.
+	await rmdir(dirname(file)).catch(() => {});
 }
 
 async function physicalStoreIdentity(store: string): Promise<string> {
@@ -37,6 +72,9 @@ async function physicalStoreIdentity(store: string): Promise<string> {
 async function readFence(file: string): Promise<PublicationFence | undefined> {
 	let text: string;
 	try {
+		if (!(await lstat(dirname(file))).isDirectory() || !(await lstat(file)).isFile()) {
+			throw new Error(`not a publication fence: ${file}`);
+		}
 		text = await readFile(file, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -72,14 +110,14 @@ export async function cleanInterruptedPublication<T>(
 	staging: string,
 	clean: (interrupted: boolean) => Promise<T>,
 ): Promise<T> {
-	const file = await fencePath(target);
+	const { file } = await locateDestination(target);
 	const record = await readFence(file);
 	if (record?.staging !== staging) return clean(false);
 	if (record.storeIdentity !== (await physicalStoreIdentity(store)))
 		throw new Error("the interrupted move's repository has changed");
 	if (await mayStillMove(record.git)) throw new Error("the interrupted Git worktree move may still be running");
 	const result = await clean(true);
-	await rm(file);
+	await removeFence(file);
 	return result;
 }
 
@@ -93,9 +131,12 @@ export async function withPublicationFence<T>(
 	staging: string,
 	signal: AbortSignal | undefined,
 	onWait: (message: string) => void,
-	action: (started: (pid: number) => Promise<void>) => Promise<T>,
+	action: (started: (pid: number) => Promise<void>, targetIdentity: string | undefined) => Promise<T>,
 ): Promise<T> {
-	const [file, storeIdentity] = await Promise.all([fencePath(target), physicalStoreIdentity(store)]);
+	const [{ file, targetIdentity }, storeIdentity] = await Promise.all([
+		locateDestination(target),
+		physicalStoreIdentity(store),
+	]);
 	const message = `Waiting for a previous Git worktree move into ${target} to stop`;
 	const blocked = (cause?: unknown) =>
 		new WorkspaceGitError(
@@ -129,19 +170,19 @@ export async function withPublicationFence<T>(
 		await rm(file);
 	}
 	signal?.throwIfAborted();
-	await writeFile(file, JSON.stringify({ storeIdentity, staging }), { flag: "wx", mode: 0o600 });
+	await createFence(file, { storeIdentity, staging });
 	try {
 		return await action(async (pid) => {
 			const git: ProcessRecord = { host: hostname(), pid, started: await processStartTokenAsync(pid) };
-			const temporary = `${file}.${randomUUID()}.tmp`;
+			const temporary = join(dirname(file), `.writing-${randomBytes(16).toString("hex")}`);
 			try {
 				await writeFile(temporary, JSON.stringify({ storeIdentity, staging, git }), { flag: "wx", mode: 0o600 });
 				await renameWithRetry(temporary, file);
 			} finally {
 				await rm(temporary, { force: true }).catch(() => {});
 			}
-		});
+		}, targetIdentity);
 	} finally {
-		await rm(file, { force: true }).catch(() => {});
+		await removeFence(file).catch(() => {});
 	}
 }

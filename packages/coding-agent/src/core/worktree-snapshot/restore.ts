@@ -21,7 +21,7 @@ import { pathExists } from "../../utils/path-exists.ts";
 import { asyncScope } from "../async-scope.ts";
 import { takeOverDeadHolderAsync } from "../lock-holder.js";
 import { releaseLock } from "../lock-release.ts";
-import { takeTakeoverMutexAsync } from "../lock-takeover.js";
+import { lockHolderAsync, takeTakeoverMutexAsync } from "../lock-takeover.js";
 import { renameWithRetry } from "../rename-retry.ts";
 import { deferRestorePhase, noteRestoreFetch, timeRestorePhase } from "../resume/timings.ts";
 import {
@@ -2763,7 +2763,7 @@ async function publishWorktree(publish: PublishWorktree): Promise<string> {
 					staging,
 					signal,
 					repositoryLockProgress.getStore() ?? process.emitWarning,
-					(started) => moveIntoPlace(publish, record, snapshotId, moving, started),
+					(started, targetIdentity) => moveIntoPlace(publish, record, snapshotId, moving, started, targetIdentity),
 				),
 			),
 		);
@@ -2828,6 +2828,7 @@ async function moveIntoPlace(
 	snapshotId: string | null,
 	moving: (state: MoveState) => void,
 	onPublicationChild: (pid: number) => Promise<void>,
+	targetIdentity: string | undefined,
 ): Promise<void> {
 	const { git, path, signal } = publish;
 	const { staging, createdTarget } = record;
@@ -2836,6 +2837,9 @@ async function moveIntoPlace(
 			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
 		}
 	} else {
+		if (targetIdentity === undefined || (await lockHolderAsync(path)) !== targetIdentity) {
+			throw new WorkspaceRestoreError("unsafe-target", { snapshotId, target: path, reason: "not-empty" });
+		}
 		await writing(path, snapshotId, () => rmdir(path));
 	}
 	// `-f` replaces only a registration whose directory is gone, as a store restored from a CI cache keeps for the
