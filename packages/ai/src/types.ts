@@ -276,6 +276,8 @@ export interface StreamOptions extends ProviderRequestOptions<Model<Api>> {
 	 * session-aware features. Ignored by providers that don't support it.
 	 */
 	sessionId?: string;
+	/** Stable across retries of one logical request. Used only by adapters with idempotency enabled. */
+	logicalRequestId?: string;
 	/**
 	 * Do not use or record server-side continuation state for this request (for example
 	 * Anthropic message threads). Set this for replays such as cache warming, which must not

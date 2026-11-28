@@ -90,7 +90,11 @@ export interface ModelFallbackRecord {
 	from: string;
 	/** The failure that moved the session on. */
 	reason: string;
-	skipped?: { model: string; provider: string; reason: "no-credentials" | "auth-failed" | "rate-limited" }[];
+	skipped?: {
+		model: string;
+		provider: string;
+		reason: "no-credentials" | "auth-failed" | "rate-limited" | "quota-exhausted";
+	}[];
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {

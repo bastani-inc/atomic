@@ -1,4 +1,5 @@
 import {
+	type AssistantMessage,
 	type ClientIdentity,
 	createInitialSystemMessage,
 	getCurrentSystemMessage,
@@ -13,6 +14,7 @@ import {
 	toToolDeclaration,
 } from "@bastani/atomic-ai";
 import { runAgentLoop, runAgentLoopContinue } from "./agent-loop.ts";
+import { assistantRequestIds } from "./request-identity.js";
 import { getDefaultStreamFn } from "./stream-fn.ts";
 import type {
 	AfterToolCallContext,
@@ -397,8 +399,8 @@ export class Agent {
 		await this.runPromptMessages(messages);
 	}
 
-	/** Continue from the current transcript. The last message must be a user or tool-result message. */
-	async continue(): Promise<void> {
+	/** Continue from the current transcript. Pass the omitted assistant reply as `retryOf` to retry its request. */
+	async continue(options?: { retryOf: AssistantMessage }): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
@@ -413,7 +415,7 @@ export class Agent {
 			throw new Error("Cannot continue from message role: assistant");
 		}
 
-		await this.runContinuation();
+		await this.runContinuation(options && assistantRequestIds.get(options.retryOf));
 	}
 
 	/**
@@ -476,11 +478,11 @@ export class Agent {
 		});
 	}
 
-	private async runContinuation(): Promise<void> {
+	private async runContinuation(logicalRequestId?: string): Promise<void> {
 		await this.runWithLifecycle(async (signal) => {
 			await runAgentLoopContinue(
 				this.createContextSnapshot(),
-				this.createLoopConfig(),
+				{ ...this.createLoopConfig(), logicalRequestId },
 				(event) => this.processEvents(event),
 				signal,
 				this.streamFunction,

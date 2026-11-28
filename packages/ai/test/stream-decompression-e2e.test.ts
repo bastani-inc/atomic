@@ -54,7 +54,7 @@ const compat = {
 	supportsLongCacheRetention: false,
 } satisfies Omit<
 	Required<OpenAICompletionsCompat>,
-	"cacheControlFormat" | "promptCacheKeyMode" | "thinkingTokenBudgetField" | "vllmPriority"
+	"cacheControlFormat" | "promptCacheKeyMode" | "thinkingTokenBudgetField" | "vllmPriority" | "sendIdempotencyKey"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];

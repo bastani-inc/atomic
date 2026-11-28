@@ -1079,6 +1079,10 @@
           ],
           "description": "Session-affinity header format. Defaults are API-specific or auto-detected."
         },
+        "sendIdempotencyKey": {
+          "type": "boolean",
+          "description": "Send an Idempotency-Key across retries of the same openai-completions or openai-responses request. Enable only if the endpoint documents support. Default: false."
+        },
         "promptCacheKeyMode": {
           "anyOf": [
             {

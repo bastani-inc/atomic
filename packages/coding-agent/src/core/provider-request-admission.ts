@@ -3,6 +3,7 @@ import { ProviderRetryTransport } from "@bastani/atomic-ai/utils/provider-retry"
 import { createFetchWithAdmission } from "@bastani/atomic-ai/utils/request-admission";
 import { RetryDeadlineError, retryDeadlineReached } from "@bastani/atomic-ai/utils/retry-sleep";
 import { asyncScope } from "./async-scope.ts";
+import { observeFailedProviderAccount, providerAccount } from "./provider-account.ts";
 import {
 	isProviderLimitFailure,
 	markProviderRateLimitObserved,
@@ -37,7 +38,7 @@ interface StreamAdmissionState {
 }
 
 const streamAdmission = asyncScope<StreamAdmissionState>();
-const admittedFetches = new WeakMap<typeof fetch, Map<string, typeof fetch>>();
+const admittedFetches = new WeakMap<typeof fetch, Map<string, { account?: string; fetch: typeof fetch }>>();
 
 async function responseText(response: Response): Promise<string> {
 	try {
@@ -47,7 +48,7 @@ async function responseText(response: Response): Promise<string> {
 	}
 }
 
-function providerFetch(provider: string, model: string, originalFetch: typeof fetch): typeof fetch {
+function providerFetch(provider: string, model: string, originalFetch: typeof fetch, account?: string): typeof fetch {
 	let providers = admittedFetches.get(originalFetch);
 	if (!providers) {
 		providers = new Map();
@@ -55,7 +56,7 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 	}
 	const key = `${provider}/${model}`;
 	const cached = providers.get(key);
-	if (cached) return cached;
+	if (cached && cached.account === account) return cached.fetch;
 	const observedFetch: typeof fetch = Object.assign(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
 		const state = streamAdmission.getStore();
 		if (state) {
@@ -69,15 +70,17 @@ function providerFetch(provider: string, model: string, originalFetch: typeof fe
 			// The body can name the model whose limit was hit, which scopes the cooldown to that model.
 			const body = await responseText(response);
 			const failure = { status: response.status, headers: response.headers, message: body, body };
-			recordProviderRateLimit(provider, failure, model);
-			if (state) state.observedScope = providerLimitScope(provider, failure, model);
+			recordProviderRateLimit(provider, failure, model, account);
+			if (state) state.observedScope = providerLimitScope(provider, failure, model, account);
 			if (state && response.status === 429) state.observedRateLimit = true;
 			if (state && response.status === 402) state.observedQuotaExhaustion = true;
-		} else if (response.ok) recordProviderSuccess(provider, model);
+		} else if (response.ok) recordProviderSuccess(provider, model, account);
 		return response;
 	}, originalFetch);
-	const admitted = createFetchWithAdmission(observedFetch, (signal) => waitForAdmission(provider, model, signal));
-	providers.set(key, admitted);
+	const admitted = createFetchWithAdmission(observedFetch, (signal) =>
+		waitForAdmission(provider, model, signal, account),
+	);
+	providers.set(key, { account, fetch: admitted });
 	return admitted;
 }
 
@@ -98,7 +101,12 @@ function sleepForAdmission(ms: number, signal?: AbortSignal): Promise<void> {
 	});
 }
 
-async function waitForAdmission(provider: string, model: string, signal?: AbortSignal): Promise<void> {
+async function waitForAdmission(
+	provider: string,
+	model: string,
+	signal?: AbortSignal,
+	account?: string,
+): Promise<void> {
 	let queued = false;
 	while (true) {
 		signal?.throwIfAborted();
@@ -107,7 +115,7 @@ async function waitForAdmission(provider: string, model: string, signal?: AbortS
 			await turn;
 			signal?.throwIfAborted();
 		}
-		const delay = tryAdmitProviderRequest(provider, model);
+		const delay = tryAdmitProviderRequest(provider, model, account);
 		if (delay === 0) {
 			await providerRequestGate()?.(provider, model, signal);
 			// A gate's answer can cross the caller's abort; a request its caller gave up on is never sent.
@@ -123,16 +131,25 @@ export async function admitProviderStream(
 	model: Model<Api>,
 	options: StreamOptions & { [assistantRetryAttempt]?: boolean },
 	ownsTransport: boolean,
-): Promise<{ options: StreamOptions; run<T>(invoke: () => T): T; observeFailure(error: AssistantMessage): void }> {
+): Promise<{
+	options: StreamOptions;
+	run<T>(invoke: () => T): T;
+	observeFailure(error: AssistantMessage): void;
+	observeSuccess(): void;
+}> {
+	const account = providerAccount(model, options);
 	const state: StreamAdmissionState = { observedRateLimit: false, observedQuotaExhaustion: false };
 	if (options[assistantRetryAttempt]) state.outerRetryDeadline = options.retryDeadline;
 	const usesFetch =
 		!ownsTransport &&
 		(FETCH_APIS.has(model.api) || (model.api === "openai-codex-responses" && options.transport === "sse"));
 	if (usesFetch) {
-		options = { ...options, fetch: providerFetch(model.provider, model.id, options.fetch ?? globalThis.fetch) };
+		options = {
+			...options,
+			fetch: providerFetch(model.provider, model.id, options.fetch ?? globalThis.fetch, account),
+		};
 	} else {
-		await waitForAdmission(model.provider, model.id, options.signal);
+		await waitForAdmission(model.provider, model.id, options.signal, account);
 		// Google's SDK accepts fetch but, unlike the OpenAI adapters, is admitted before the stream is opened.
 		if (
 			state.outerRetryDeadline !== undefined &&
@@ -152,16 +169,20 @@ export async function admitProviderStream(
 			return streamAdmission.run(state, invoke);
 		},
 		observeFailure(error) {
+			if (account !== undefined) observeFailedProviderAccount(error, account);
 			if (state.observedRateLimit && error.stopReason === "error" && !isProviderLimitFailure(error)) {
 				error.errorMessage = `429 Too Many Requests: ${error.errorMessage ?? "provider rate limited the request"}`;
 			}
 			if (!isProviderLimitFailure(error)) return;
 			let scope = state.observedScope;
 			if (scope === undefined) {
-				recordProviderRateLimit(model.provider, error, model.id);
-				scope = providerLimitScope(model.provider, error, model.id);
+				recordProviderRateLimit(model.provider, error, model.id, account);
+				scope = providerLimitScope(model.provider, error, model.id, account);
 			} else recordProviderRetryHint(model.provider, error, scope);
 			markProviderRateLimitObserved(error, scope);
+		},
+		observeSuccess() {
+			recordProviderSuccess(model.provider, model.id, account);
 		},
 	};
 }
