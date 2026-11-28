@@ -292,6 +292,7 @@ Running `migrate` as the owner role ensures:
 
 - **Fast startup:** Agents open an up-to-date database in a couple of round trips with no schema-init contention.
 - **Owner-only optimizations and lazy objects:** Applies `fillfactor`, autovacuum thresholds, `lz4` compression, search index tuning, unlogged `intercom_wakeups`, the concurrent `snapshot_session_links_anchored` index rebuild (up to a 6-hour statement timeout for large tables without blocking writes), the single-round-trip session append function, and lazily initialized tables (fork staging, chat records, Intercom ended-child queue). Each table tuning `ALTER TABLE` uses a 2-second `lock_timeout` and gracefully skips busy tables without failing the migration—re-run later if any table was skipped.
+- **Faster resume with worktree snapshots:** The migration fills and indexes the small snapshot fields Atomic compares when resuming sessions that launched many subagents. New stores usually build the index on first open; large existing stores leave it to `atomic storage migrate`. The backfill can take time on a large database, but the index builds concurrently. Sessions can still resume using the unindexed path until the migration finishes. If interrupted, rerun the same command as the owner.
 
 ## Checklist
 
