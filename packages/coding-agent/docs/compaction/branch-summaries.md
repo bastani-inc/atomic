@@ -49,6 +49,6 @@ Built-in branch summaries keep a cumulative list of read and modified files, car
 
 ## How summary requests run
 
-Branch summary requests run no tools and bypass prompt cache writes so summarizing an abandoned branch does not disturb prompt caching on your main branch. They use normal authentication, cancellation, and retry behavior.
+Branch summary requests run no tools and bypass prompt cache writes so summarizing an abandoned branch does not disturb prompt caching on your main branch. They retry temporary failures within [your retry settings](/settings#retries-outside-chat). If the account is out of quota or the server asks for a wait longer than the retry limit, Atomic stops without retrying that model. To switch branches anyway, run `/tree` and choose **No summary**.
 
 For the exact prompt template, `BranchSummaryEntry` structure, message serialization, edge cases, and the `session_before_tree` extension hook, see [Branch summary format](/compaction/reference#branch-summary-format) and [Extension hooks for branch summarization](/compaction/reference#extension-hooks-for-branch-summarization).

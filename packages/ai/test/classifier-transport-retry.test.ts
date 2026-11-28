@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "vitest";
 import { postClassifierRequest } from "../src/api/classifier-shared.ts";
-import type { ClassifierModel } from "../src/types.ts";
+import { classify as classifyCloudflare } from "../src/api/cloudflare-workers-ai-system-one.ts";
+import { classify as classifyLlama } from "../src/api/llama-cpp-classify.ts";
+import { classify as classifyOpenAI } from "../src/api/openai-decisions.ts";
+import { classify as classifyTypeSafe } from "../src/api/typesafe-system-one.ts";
+import type { ClassifierContext, ClassifierModel } from "../src/types.ts";
 import { normalizeProviderError } from "../src/utils/error-body.ts";
 import { findTlsCertificateRefusal } from "../src/utils/tls-certificate.ts";
 
@@ -18,6 +22,60 @@ const model: ClassifierModel<"openai-decisions"> = {
 };
 
 const url = new URL("https://api.openai.com/v1/decisions");
+
+const context: ClassifierContext = {
+	state: { text: "The order arrived." },
+	questions: {
+		order: { type: "choice", instructions: "Classify order status", criteria: { arrived: "Delivered", late: "Late" } },
+	},
+};
+
+const classifierApis = [
+	["openai-decisions", classifyOpenAI],
+	["typesafe-system-one", classifyTypeSafe],
+	["cloudflare-workers-ai-system-one", classifyCloudflare],
+	["llama-cpp-classify", classifyLlama],
+] as const;
+
+function classifierRejection(code: string, retryAfter: string) {
+	let attempts = 0;
+	const fetch: typeof globalThis.fetch = async (url, init) => {
+		const path = new URL(String(url)).pathname;
+		if (path === "/tokenize") {
+			const { content }: { content: string } = JSON.parse(String(init?.body));
+			return Response.json({ tokens: [...content].map((char) => char.codePointAt(0)) });
+		}
+		if (path === "/apply-template") return Response.json({ prompt: "Order status: " });
+		attempts++;
+		return Response.json({ error: { code, message: "Request rejected" } }, {
+			status: 429,
+			headers: { "Retry-After": retryAfter },
+		});
+	};
+	return { fetch, attempts: () => attempts };
+}
+
+it.each(classifierApis)("%s does not retry a quota 429 (#6783)", async (api, classify) => {
+	const rejected = classifierRejection("insufficient_quota", "0.001");
+	const result = await classify({ ...model, api }, context, { apiKey: "secret", fetch: rejected.fetch });
+	assert.equal(result.stopReason, "error");
+	assert.equal(rejected.attempts(), 1);
+});
+
+describe.each(classifierApis)("%s retry advice", (api, classify) => {
+	it.each([
+		["0.001", 1, 3],
+		["360", 360_000, 1],
+	] as const)("retains Retry-After: %s after exhausting or skipping retries (#6783)", async (header, delay, attempts) => {
+		const rejected = classifierRejection("rate_limit_exceeded", header);
+		const result = await classify({ ...model, api }, context, {
+			apiKey: "secret", fetch: rejected.fetch, maxRetryDelayMs: 5,
+		});
+		assert.equal(result.stopReason, "error");
+		assert.equal(rejected.attempts(), attempts);
+		assert.equal(result.retryAfterMs, delay);
+	});
+});
 
 describe("postClassifierRequest transport retries", () => {
 	it("retries a bare UND_ERR_SOCKET fetch error and succeeds on retry", async () => {

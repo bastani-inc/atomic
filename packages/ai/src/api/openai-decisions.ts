@@ -13,6 +13,7 @@ import {
 	isRecord,
 	parseClassifierUsage,
 	postClassifierRequest,
+	recordClassifierFailure,
 	requiredNumber,
 } from "./classifier-shared.ts";
 
@@ -187,6 +188,7 @@ export const classify: ClassifierFunction<ClassifierOptions> = async (model, con
 		output.answers = {};
 		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = errorMessage(error);
+		recordClassifierFailure(output, error);
 		return output;
 	}
 };

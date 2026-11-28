@@ -10,7 +10,13 @@ import type {
 } from "../types.ts";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
-import { isRecord, parseClassifierUsage, postClassifierRequest, requiredNumber } from "./classifier-shared.ts";
+import {
+	isRecord,
+	parseClassifierUsage,
+	postClassifierRequest,
+	recordClassifierFailure,
+	requiredNumber,
+} from "./classifier-shared.ts";
 
 /** Base64 image in the System One request's top-level `assets` map. */
 export interface SystemOneImageAsset {
@@ -264,6 +270,7 @@ export async function classifySystemOne(
 	} catch (error) {
 		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error), `${transport.label} error`);
+		recordClassifierFailure(output, error);
 		return output;
 	}
 }

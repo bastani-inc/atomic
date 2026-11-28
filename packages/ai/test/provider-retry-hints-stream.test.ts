@@ -8,7 +8,7 @@ import { stream as streamOpenAIResponses } from "../src/api/openai-responses.ts"
 import { stream as streamPiMessages } from "../src/api/pi-messages.ts";
 import type { Model } from "../src/types.ts";
 import { createFetchWithAdmission } from "../src/utils/request-admission.ts";
-import { assistantRetryDelayMs } from "../src/utils/retry.ts";
+import { assistantRetryDelayMs, retryAssistantCall } from "../src/utils/retry.ts";
 import { normalizeContext } from "../src/utils/transcript.ts";
 
 const cloudflare520Body = JSON.stringify({
@@ -177,6 +177,46 @@ test("a retry that was on time before waiting for a provider slot is not sent af
 	assert.equal(admissions, 2);
 	assert.equal(fetch.mock.calls.length, 1);
 	assert.equal(result.stopReason, "aborted");
+});
+
+test("an over-cap Responses Retry-After ends assistant retries before scheduling another call (#6783)", async () => {
+	const fetch = vi.fn(async () =>
+		Response.json(
+			{ error: { code: "rate_limit_exceeded", message: "Try again later" } },
+			{ status: 429, headers: { "Retry-After": "360" } },
+		),
+	);
+	const onRetryScheduled = vi.fn();
+	const result = await retryAssistantCall(
+		() => streamOpenAIResponses(responsesModel, context, { apiKey: "k", maxRetries: 0, fetch }).result(),
+		{ enabled: true, maxRetries: 1, baseDelayMs: 1, maxRetryDelayMs: 1 },
+		undefined,
+		{ onRetryScheduled },
+	);
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.retryAfterMs, 360_000);
+	assert.equal(fetch.mock.calls.length, 1);
+	assert.equal(onRetryScheduled.mock.calls.length, 0);
+});
+
+test("a Responses stream reporting a spend limit is not retried by the assistant (#6783)", async () => {
+	const event = {
+		type: "response.failed",
+		sequence_number: 0,
+		response: { status: "failed", error: { code: "project_spend_limit_exceeded", message: "429 Request rejected" } },
+	};
+	const fetch = vi.fn(async () =>
+		new Response(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, {
+			headers: { "content-type": "text/event-stream" },
+		}),
+	);
+	const result = await retryAssistantCall(
+		() => streamOpenAIResponses(responsesModel, context, { apiKey: "k", maxRetries: 0, fetch }).result(),
+		{ enabled: true, maxRetries: 1, baseDelayMs: 1 },
+		undefined,
+	);
+	assert.equal(result.stopReason, "error");
+	assert.equal(fetch.mock.calls.length, 1);
 });
 
 test("openai-responses takes the larger of Retry-After and the body retry_after (#3623)", async () => {

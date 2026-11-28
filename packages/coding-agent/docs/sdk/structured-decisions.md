@@ -69,7 +69,7 @@ Inside an extension handler, pass `settings: { getDecisionModel: () => ctx.getDe
 - `questions`: non-empty record mapping caller-chosen IDs to `choice`, `bool`, or `score` question definitions.
 - `instructions`: optional top-level context shared across all questions. Defaults to ``"Answer each question about `state`."`` and must be non-blank if supplied.
 - `deadline`: optional positive safe integer wall-clock limit in milliseconds covering credential screening, requests, retries, repairs, and fallbacks. Defaults to `settings.getHttpIdleTimeoutMs?.()` (from [`httpIdleTimeoutMs`](/settings#http)), or 10 minutes if unset.
-- `retry`: optional `RetryPolicy` for transient chat transport errors. Precedence is `request.retry` → `settings.getRetrySettings?.()` → `{ enabled: true, maxRetries: 3, baseDelayMs: 2000 }`.
+- `retry`: optional retry policy for temporary classifier and chat failures. Precedence is `request.retry` → `settings.getRetrySettings?.()` → `{ enabled: true, maxRetries: 3, baseDelayMs: 2000 }`. No retry is sent for an exhausted account quota or for a server wait longer than `maxRetryDelayMs` (60,000 ms by default). A fallback can still answer if the request allows one. For the settings-file equivalent, see [Retries outside chat](/settings#retries-outside-chat).
 - `signal`: optional `AbortSignal`; cancellation rejects immediately with `signal.reason`.
 - `model`: optional exact `provider/model` ID to use instead of `decisionModel` (cannot be `"auto"` or have surrounding whitespace).
 - `requireProbabilities`: when `true`, only a classifier may answer.
@@ -124,6 +124,8 @@ Every `DecisionError` exposes `code`, `hint`, `retryable`, `cause`, and `fields(
 | `DecisionTimeoutError` | `timeout` | The wall-clock deadline expired | `timeoutMs`, `elapsedMs`, `phase`, `attempts` | Retry, or raise `deadline` / `timeoutMs`. `retryable` is `true`. |
 | `DecisionOutputError` | `invalid-output` | The model responded, but output failed schema validation after repairs | `model`, `detail` | Clarify questions or pick another model. |
 | `DecisionProviderError` | `provider-failure` | The provider request failed (or credential screening threw) | `model`, `providerStatus`, `providerCode`, `retryAfterMs`, `detail` | `retryable` is `true` **only** when `providerCode` is `"rate_limit_exceeded"` or `"insufficient_quota"`; otherwise check provider status and auth. |
+
+When a provider reports a throttle or exhausted quota and supplies retry advice, the decision error keeps that delay as `retryAfterMs`, in milliseconds, even when it exceeded the retry cap. For an exhausted quota, wait for a reset, replenish the account, or use another provider rather than retrying right away.
 
 <Note>
 Legacy `routerModel` entries in `settings.json` migrate to `decisionModel` automatically (an existing `decisionModel` wins, and invalid legacy values are ignored with a one-time warning). `DecisionConfigError` still recognizes the legacy decode-only code `"renamed-setting"` when rehydrating serialized errors from older processes. See [decisionModel](/settings#decisionmodel).

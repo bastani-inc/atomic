@@ -14,6 +14,7 @@ import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
+import { recordClassifierFailure } from "./classifier-shared.ts";
 
 /**
  * Classification with a chat model served by llama.cpp's `llama-server`.
@@ -459,6 +460,7 @@ export const classify: ClassifierFunction<ClassifierOptions> = async (model, con
 		output.answers = {};
 		output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 		output.errorMessage = formatProviderError(normalizeProviderError(error), `${LABEL} error`);
+		recordClassifierFailure(output, error);
 		return output;
 	}
 };

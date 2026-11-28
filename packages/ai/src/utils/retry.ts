@@ -1,7 +1,7 @@
 import { getGitHubCopilotError } from "../providers/github-copilot-errors.ts";
 import type { AssistantMessage, RetryDeadline } from "../types.ts";
 import { DEFAULT_MAX_RETRY_DELAY_MS } from "./provider-retry.ts";
-import { isProviderQuotaExhaustionText } from "./responses-errors/codes.ts";
+import { isProviderQuotaCode, isProviderQuotaExhaustionText, responsesDiagnosticCode } from "./responses-errors/codes.ts";
 import { retryDeadlineReached } from "./retry-sleep.ts";
 import { getTlsCertificateRefusal } from "./tls-certificate.ts";
 
@@ -224,6 +224,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  *   too, so callers do not need to care when cancellation happened.
  * - A non-retryable error (per {@link isRetryableAssistantError}, including quota/
  *   billing exhaustion) is returned immediately so deterministic errors fail fast.
+ *   A server retry hint beyond the delay cap also ends retries for this call.
  * - Otherwise retries up to `maxRetries` times, waiting for the server retry hint or
  *   the exponential backoff (see {@link assistantRetryDelayMs}), emitting
  *   `onRetryScheduled` before each sleep, `onRetryAttemptStart` after each sleep before
@@ -306,6 +307,9 @@ export function isRetryableAssistantError(message: RetryFailure): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	// The certificate the endpoint showed is refused again by the next attempt (#6114).
 	if (getTlsCertificateRefusal(message) !== undefined) return false;
+	if (message.diagnostics?.some((diagnostic) => isProviderQuotaCode(responsesDiagnosticCode(diagnostic)))) {
+		return false;
+	}
 	const copilotError = getGitHubCopilotError(message);
 	if (copilotError !== undefined) return copilotError.retryable;
 	const errorMessage = message.errorMessage;

@@ -278,6 +278,35 @@ describe("custom remote compactor models", () => {
 		}
 	});
 
+	test.each([
+		[429, "insufficient_quota", false],
+		[429, "rate_limit_exceeded", true],
+		[503, "server_error", true],
+	] as const)("the compactor reports HTTP %s %s as retryable=%s (#6783)", async (status, code, retryable) => {
+		let calls = 0;
+		await assert.rejects(
+			requestCompactorOutput({
+				apiKey: "test-key",
+				modelId: "morph-compactor",
+				baseUrl: "https://api.morphllm.com/v1",
+				messages: [],
+				query: "q",
+				signal: new AbortController().signal,
+				fetchFn: (async () => {
+					calls++;
+					return Response.json({ error: { code, message: "Request failed" } }, { status });
+				}) as unknown as typeof fetch,
+			}),
+			(error: unknown) => {
+				assert.ok(error instanceof CompactorFailure);
+				assert.equal(error.status, status);
+				assert.equal(error.retryable, retryable);
+				return true;
+			},
+		);
+		assert.equal(calls, 1);
+	});
+
 	test("CompactionError family supports typed codes, guards, serialization, rehydration, and RPC decoding", async () => {
 		const missingUrlErr = await requestCompactorOutput({
 			apiKey: "sk-test",
