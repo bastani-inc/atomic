@@ -161,7 +161,8 @@ describe("a Copilot stream cut by the remote side after HTTP 200 (#4626)", () =>
 	it.each(API_CASES)(
 		"$api: reports the request that streamed, not the requests the provider retried before it (#4626)",
 		async (testCase) => {
-			useFakeClock();
+			vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
+			vi.advanceTimersByTime(CLOCK_OFFSET_MS);
 			const encoder = new TextEncoder();
 			let requests = 0;
 			const fetchRetrying: typeof globalThis.fetch = async () => {
@@ -187,12 +188,14 @@ describe("a Copilot stream cut by the remote side after HTTP 200 (#4626)", () =>
 				});
 			};
 
-			const message = await streamSimple(discovered(testCase.modelId, "http://127.0.0.1:9"), userTurn, {
+			const pending = streamSimple(discovered(testCase.modelId, "http://127.0.0.1:9"), userTurn, {
 				apiKey: API_KEY,
 				maxRetries: 1,
 				reasoning: "low",
 				fetch: fetchRetrying,
 			}).result();
+			await vi.runAllTimersAsync();
+			const message = await pending;
 
 			assert.equal(requests, 2);
 			const error = getGitHubCopilotError(message);

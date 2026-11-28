@@ -111,6 +111,7 @@ function cloudflare520(headers: Record<string, string> = {}): typeof globalThis.
 }
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
@@ -162,21 +163,25 @@ test.each(["openai", "cloudflare-ai-gateway"] as const)(
 );
 
 test("a retry that was on time before waiting for a provider slot is not sent after its deadline (#5627)", async () => {
-	const now = vi.spyOn(performance, "now").mockReturnValue(10);
+	vi.useFakeTimers();
 	const fetch = vi.fn(async () => new Response("busy", { status: 503, headers: { "retry-after-ms": "1" } }));
+	const gate = Promise.withResolvers<void>();
 	let admissions = 0;
 	const admitted = createFetchWithAdmission(fetch, async () => {
-		if (++admissions === 2) now.mockReturnValue(70);
+		if (++admissions === 2) await gate.promise;
 	});
-	const result = await streamOpenAICompletions(completionsModel, context, {
+	const result = streamOpenAICompletions(completionsModel, context, {
 		apiKey: "k",
 		maxRetries: 1,
-		retryDeadline: 60,
+		retryDeadline: performance.now() + 60,
 		fetch: admitted,
 	}).result();
+	await vi.advanceTimersByTimeAsync(10);
 	assert.equal(admissions, 2);
+	await vi.advanceTimersByTimeAsync(60);
+	gate.resolve();
+	assert.equal((await result).stopReason, "aborted");
 	assert.equal(fetch.mock.calls.length, 1);
-	assert.equal(result.stopReason, "aborted");
 });
 
 test("an over-cap Responses Retry-After ends assistant retries before scheduling another call (#6783)", async () => {
