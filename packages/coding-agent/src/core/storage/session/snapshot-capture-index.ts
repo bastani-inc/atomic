@@ -166,17 +166,19 @@ export async function ensureCaptureHeadings(
 		await backfill(tx, dialect, entries);
 		await tx.exec(createIndex(entries));
 	};
-	// Share the SQLite open's transaction and its final schema version stamp with the other session tables.
-	if (
-		!queueSqliteSchemaSetup(database, schema.ledger, {
-			stamp: schema,
-			done: (catalog) => sqliteReady(catalog),
-			async run(ctx) {
-				await ctx.flushWrites();
-				await setup(ctx.tx);
-			},
-		})
-	) {
+	if (dialect.name === "sqlite") {
+		// SQLite detects the committed column, triggers and index from the catalog, so it needs no version stamp.
+		if (
+			!queueSqliteSchemaSetup(database, schema.ledger, {
+				done: (catalog) => sqliteReady(catalog),
+				async run(ctx) {
+					await ctx.flushWrites();
+					await setup(ctx.tx);
+				},
+			})
+		)
+			await database.transaction(setup, { retryTransientFailures: true });
+	} else {
 		if (ensureStorageSchemaOnce === undefined) return false;
 		await ensureStorageSchemaOnce(database, schema, setup);
 	}
