@@ -1,9 +1,9 @@
 {
-	"name": "@bastani/atomic-timers",
-	"version": "0.0.0",
-	"private": true,
-	"description": "Atomic's shared deadline timer source, built into its consumers",
-	"type": "module",
-	"exports": "./src/index.ts",
-	"license": "MIT"
+  "name": "@bastani/atomic-timers",
+  "version": "0.10.17",
+  "private": true,
+  "description": "Atomic's shared deadline timer source, built into its consumers",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "license": "MIT"
 }
