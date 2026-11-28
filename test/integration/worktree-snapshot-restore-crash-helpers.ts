@@ -137,6 +137,14 @@ export function ageLocks(store: string): void {
 	for (const name of readdirSync(records)) if (name.endsWith(".lock")) utimesSync(join(records, name), old, old);
 }
 
+/** A store directory also has permanent takeover mutex files beside its bare Git repositories. */
+export function storedRepositories(store: string): string[] {
+	const repositories = join(store, "repositories");
+	return readdirSync(repositories, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory() && entry.name.endsWith(".git"))
+		.map((entry) => join(repositories, entry.name));
+}
+
 export async function assertHealthy(fixture: Fixture, store: string, results: readonly string[]): Promise<void> {
 	const { sandbox, snapshot } = fixture;
 	const worktrees = join(store, "worktrees");
@@ -145,9 +153,9 @@ export async function assertHealthy(fixture: Fixture, store: string, results: re
 		assert.equal(readFileSync(join(path, "dirty.txt"), "utf8"), "recorded\n");
 		assert.equal((await verifyWorktree(snapshot, path)).tree, snapshot.tree);
 	}
-	const repositories = join(store, "repositories");
-	for (const name of readdirSync(repositories)) {
-		const repo = join(repositories, name);
+	const repositories = storedRepositories(store);
+	assert.ok(repositories.length > 0, "the restore created a bare Git repository");
+	for (const repo of repositories) {
 		const listing = await sandbox.git(sandbox.root, "--git-dir", repo, "worktree", "list", "--porcelain");
 		assert.doesNotMatch(listing, /^(locked|prunable)( |$)/m);
 		await sandbox.git(sandbox.root, "--git-dir", repo, "fsck", "--no-reflogs");

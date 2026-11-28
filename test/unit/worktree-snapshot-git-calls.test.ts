@@ -53,6 +53,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 	};
 });
 
+import { takeoverLockPath } from "../../packages/coding-agent/src/core/lock-takeover.js";
 import { withScratchDirectory } from "../../packages/coding-agent/src/core/worktree-snapshot/capture.ts";
 import {
 	captureWorktreeSnapshot,
@@ -247,7 +248,14 @@ describe("restore operation counts", () => {
 			(remotes) => `${createHash("sha256").update(remotes.join("\n")).digest("hex").slice(0, 24)}.git`,
 		);
 		assert.equal(new Set(expected).size, 2);
-		assert.deepEqual(readdirSync(join(storeDir, "repositories")).sort(), [...expected].sort());
+		// The optional native mutex is permanent but does not represent an object store.
+		const mutexes = new Set(expected.map((name) => basename(takeoverLockPath(`${name}.lock`))));
+		assert.deepEqual(
+			readdirSync(join(storeDir, "repositories"))
+				.filter((name) => !mutexes.has(name))
+				.sort(),
+			[...expected].sort(),
+		);
 		const restored = await restoreWorktree(snapshot, { blobs, storeDir });
 		const common = resolve(await sandbox.git(restored.path, "rev-parse", "--git-common-dir"));
 		const hostStore = `${createHash("sha256").update(snapshot.remotes.join("\n")).digest("hex").slice(0, 24)}.git`;

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs";
 import {
 	existsSync,
@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { link, mkdir, readdir, readFile, rename, rm, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, toNamespacedPath } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { createModuleRequire } from "../utils/module-require.js";
 import { pathExists } from "../utils/path-exists.ts";
@@ -36,6 +36,11 @@ import {
  * mutex stale, and a pause or a crash can never admit two holders. Without the native lock, as with a native module
  * built before it, the mutex is a directory whose owner is judged as before, with a one-time warning.
  */
+
+/** Opaque lock bookkeeping must not consume UUIDs used by the work it protects (e.g. a restore record). */
+export function newLockToken(): string {
+	return randomBytes(16).toString("hex");
+}
 
 /** How old a directory takeover mutex that names no owner must be before it is judged left by a killed process. */
 export const TAKEOVER_MUTEX_STALE_MS = 10_000;
@@ -312,7 +317,7 @@ function removeStaleMutex(mutexPath: string, readStart: typeof processStartToken
 		const stats = statSync(mutexPath, { throwIfNoEntry: false });
 		if (stats !== undefined && Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return false;
 	}
-	const aside = `${mutexPath}.${randomUUID()}.dead`;
+	const aside = `${mutexPath}.${newLockToken()}.dead`;
 	try {
 		renameSync(mutexPath, aside);
 	} catch {
@@ -334,7 +339,7 @@ async function removeStaleMutexAsync(mutexPath: string): Promise<boolean> {
 		const stats = await statIfPresent(mutexPath);
 		if (stats !== undefined && Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return false;
 	}
-	const aside = `${mutexPath}.${randomUUID()}.dead`;
+	const aside = `${mutexPath}.${newLockToken()}.dead`;
 	try {
 		await rename(mutexPath, aside);
 	} catch {
@@ -449,7 +454,7 @@ export function putBack(aside: string, path: string): boolean {
 	try {
 		if (statSync(aside).isDirectory()) {
 			const native = locks();
-			return native?.renameNoReplace(aside, path) === true;
+			return native?.renameNoReplace(toNamespacedPath(aside), toNamespacedPath(path)) === true;
 		}
 		linkSync(aside, path);
 		unlinkSync(aside);
@@ -463,7 +468,7 @@ export async function putBackAsync(aside: string, path: string): Promise<boolean
 	try {
 		if ((await stat(aside)).isDirectory()) {
 			const native = asyncLocks();
-			return (await native?.renameNoReplace(aside, path)) === true;
+			return (await native?.renameNoReplace(toNamespacedPath(aside), toNamespacedPath(path))) === true;
 		}
 		await link(aside, path);
 		await unlink(aside);
@@ -489,7 +494,7 @@ function takeDirectoryMutex(
 		host: hostname(),
 		pid: process.pid,
 		started: readStart(process.pid),
-		id: randomUUID(),
+		id: newLockToken(),
 	};
 	const owned = () => readMutexOwner(path)?.id === owner.id;
 	const mutex: TakeoverMutex = {
@@ -537,7 +542,7 @@ async function takeDirectoryMutexAsync(
 		host: hostname(),
 		pid: process.pid,
 		started: await ownStartToken(),
-		id: randomUUID(),
+		id: newLockToken(),
 	};
 	const owned = async () => (await readMutexOwnerAsync(path))?.id === owner.id;
 	const mutex: AsyncTakeoverMutex = {
@@ -573,7 +578,7 @@ async function takeDirectoryMutexAsync(
 
 /** A name beside the directory mutex at `path` for one being made or removed by a process holding the advisory lock. */
 function staging(path: string): string {
-	return `${path}.${randomUUID()}.tmp`;
+	return `${path}.${newLockToken()}.tmp`;
 }
 
 /**
@@ -586,7 +591,8 @@ function createWithOwner(path: string, owner: MutexOwner, native: NativeLocks): 
 	try {
 		mkdirSync(made);
 		writeFileSync(mutexOwnerPath(made), JSON.stringify(owner));
-		if (native.renameNoReplace(made, path)) return true;
+		// The native Win32 rename does not lengthen paths as Node's fs does; the scratch suffix can exceed MAX_PATH.
+		if (native.renameNoReplace(toNamespacedPath(made), toNamespacedPath(path))) return true;
 	} catch {
 		// Not made: the mutex is not taken.
 	}
@@ -599,7 +605,7 @@ async function createWithOwnerAsync(path: string, owner: MutexOwner, native: Asy
 	try {
 		await mkdir(made);
 		await writeFile(mutexOwnerPath(made), JSON.stringify(owner));
-		if (await native.renameNoReplace(made, path)) return true;
+		if (await native.renameNoReplace(toNamespacedPath(made), toNamespacedPath(path))) return true;
 	} catch {}
 	await removeAsideAsync(made);
 	return false;

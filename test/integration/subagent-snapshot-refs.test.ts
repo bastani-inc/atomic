@@ -15,6 +15,8 @@ import {
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { InMemoryCodingAgentModelsStore } from "../../packages/coding-agent/src/core/models-store.js";
 import { deleteSessionWithSnapshotRefs } from "../../packages/coding-agent/src/core/session-worktree-snapshots.js";
+import { openNodeSqliteDatabase } from "../../packages/coding-agent/src/core/storage/node-sqlite.js";
+import { SqlSessionStore } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import {
 	type AgentSession,
 	AuthStorage,
@@ -22,6 +24,7 @@ import {
 	ModelRuntime,
 	SettingsManager,
 } from "../../packages/coding-agent/src/index.js";
+import { unreadNotices } from "../../packages/subagents/src/runs/foreground/late-tool-result-notice.js";
 import { clearSubagentControls } from "../../packages/subagents/src/runs/inprocess/control-registry.js";
 import { GitSandbox } from "../helpers/worktree-snapshot.js";
 
@@ -148,6 +151,15 @@ test(
 		await vi.waitFor(
 			() => {
 				assert.equal(terminalChildren(session), CHILDREN);
+				const manager = session.sessionManager;
+				// Recording a terminal child neither delivers its completion card nor consumes its follow-up turn.
+				assert.equal(
+					manager
+						.getEntries()
+						.filter((entry) => entry.type === "custom_message" && entry.customType === "task-completion").length,
+					CHILDREN,
+				);
+				assert.deepEqual(unreadNotices(manager), []);
 				assert.equal(session.isStreaming, false);
 			},
 			{ timeout: REAL_SUBAGENT_TIMEOUT_MS, interval: 20 },
@@ -159,8 +171,20 @@ test(
 		assert.equal(owners.filter((owner) => owner !== parentId).length, CHILDREN, refs.join("\n"));
 		assert.equal(new Set(owners).size, CHILDREN + 1, "one ref per session and checkout");
 
-		const store = session.sessionManager.getSessionStore();
-		await deleteSessionWithSnapshotRefs(store, parentId);
+		// The interactive delete refuses to delete a live session. Close it before deleting its persisted history.
+		await session.dispose();
+		assert.deepEqual(await snapshotRefs(clone), refs, "closing the session keeps all of its refs");
+		const database = await openNodeSqliteDatabase(sandbox.path("sessions.sqlite"));
+		try {
+			const store = await SqlSessionStore.open(database);
+			try {
+				await deleteSessionWithSnapshotRefs(store, parentId);
+			} finally {
+				await store.close();
+			}
+		} finally {
+			await database.close();
+		}
 		assert.deepEqual(await snapshotRefs(clone), [], "deleting the session removes its refs and its subagents'");
 	},
 	REAL_SUBAGENT_TIMEOUT_MS,

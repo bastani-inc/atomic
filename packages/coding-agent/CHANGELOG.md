@@ -20,6 +20,8 @@
 - Large sessions resume faster over shared PostgreSQL. Atomic now reuses its storage connection, loads active subagent records in batches, and checks finished subagents’ worktree snapshots without opening their conversations. In one large session, checking those snapshots dropped from about 80 seconds to 4 seconds ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
 - Forking a session that is still receiving entries no longer replays its whole history when the store supports shared history. In a test with 68,000 entries, the fork step dropped from 11.7 seconds to 0.7 seconds without including anything appended after the fork’s starting point ([#6795](https://github.com/bastani-inc/atomic/issues/6795)).
 
+- Resuming after a crash no longer waits 30 seconds for a worktree snapshot lock when Atomic can tell the process holding it is gone. If another Atomic is still restoring the repository, the resume shows why it is waiting ([#6800](https://github.com/bastani-inc/atomic/issues/6800)).
+
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
 - Chat no longer gets stuck loading when a provider never answers, sends only keepalive pings, or stalls while sending rate-limit details. Esc also stops waiting for unresponsive extensions or queued requests. Timeouts let Atomic retry or switch models according to your settings ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
 

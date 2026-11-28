@@ -11,17 +11,26 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
-import { bunExecutable } from "../../../test/helpers/runtime.js";
+import { bunExecutable, spawnSyncCollect } from "../../../test/helpers/runtime.js";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
+import { takeoverLockPath } from "../src/core/lock-takeover.js";
+import { processStartTokenAsync } from "../src/core/process-start-token.js";
 import { MemorySnapshotBlobStore } from "../src/core/worktree-snapshot/blob-store.js";
 import { captureWorktreeSnapshot } from "../src/core/worktree-snapshot/capture.js";
 import { isWorkspaceRestoreError } from "../src/core/worktree-snapshot/errors.js";
-import { objectStorePath, REPOSITORY_LOCK_REFUSED_MS, restoreWorktree } from "../src/core/worktree-snapshot/restore.js";
+import {
+	objectStorePath,
+	REPOSITORY_LOCK_REFUSED_MS,
+	restoreWorktree,
+	withRepositoryLockProgress,
+} from "../src/core/worktree-snapshot/restore.js";
 import { DEFAULT_WORKTREE_SNAPSHOT_SETTINGS } from "../src/core/worktree-snapshot/settings.js";
+import { lockSharedWithHolder } from "../src/core/worktree-snapshot/shared-lock.js";
 import type { WorktreeSnapshot } from "../src/core/worktree-snapshot/types.js";
 
 /**
@@ -57,6 +66,9 @@ const CHILD = fileURLToPath(new URL("./fixtures/worktree-snapshot-restore-child.
 const CONCURRENT_RESTORES = 8;
 /** How long a test holds the repository lock as another process would, while the restore waits for it. */
 const LOCK_HELD_MS = 500;
+/** A restore on a local remote may do real Git work, but must not wait out the 30-second stale window. */
+const RECLAIM_BUDGET_MS = 10_000;
+const LEGACY_STALE_MS = 30_000;
 /** Eight Bun children that each load the snapshot modules and restore through Git: structural, not a slow test. */
 const CONCURRENT_CHILDREN_TIMEOUT_MS = 120_000;
 
@@ -96,10 +108,11 @@ async function restoreConcurrently(
 	mode: "exact" | "best",
 	snapshots: readonly WorktreeSnapshot[],
 	storeDir: string,
+	into?: string,
 ): Promise<ChildResult[]> {
 	const children = snapshots.map((snapshot, index) => {
 		const job = sandbox.path(`job-${index}.json`);
-		writeFileSync(job, JSON.stringify({ mode, snapshot, storeDir, git: sandbox.executable }));
+		writeFileSync(job, JSON.stringify({ mode, snapshot, storeDir, into, git: sandbox.executable }));
 		return spawn(bunExecutable(), [CHILD, job], { stdio: ["pipe", "pipe", "pipe"] });
 	});
 	const outputs = children.map((child) => linesOf(child));
@@ -149,6 +162,40 @@ async function headOf(path: string): Promise<string> {
 	return sandbox.git(path, "rev-parse", "HEAD");
 }
 
+function assertStoreHasNoLeftovers(store: string): void {
+	// The advisory mutex file is deliberately permanent; removing it could split the mutex in two.
+	const mutexFile = basename(takeoverLockPath(`${store}.lock`));
+	assert.deepEqual(
+		readdirSync(dirname(store)).filter((name) => name !== mutexFile),
+		[basename(store)],
+	);
+}
+
+function ageLock(path: string, ageMs: number): void {
+	const past = new Date(Date.now() - ageMs);
+	utimesSync(path, past, past);
+}
+
+function exitedPid(): number {
+	const exited = spawnSyncCollect([process.execPath, "-e", "console.log(process.pid)"]);
+	assert.equal(exited.exitCode, 0);
+	const pid = Number(exited.stdout.toString().trim());
+	assert.ok(Number.isSafeInteger(pid) && pid > 0);
+	return pid;
+}
+
+/** Stand-in for the record an Atomic holder wrote before it exited. */
+function leaveRepositoryLock(store: string, pid: number, started?: string, ageMs?: number): string {
+	const lockPath = `${store}.lock`;
+	mkdirSync(lockPath, { recursive: true });
+	// On APFS backdating the mtime can also change birthtime: record the identity after aging it.
+	if (ageMs !== undefined) ageLock(lockPath, ageMs);
+	const { dev, ino, birthtimeNs } = statSync(lockPath, { bigint: true });
+	const lockId = `${dev}:${ino}:${birthtimeNs}`;
+	writeFileSync(`${lockPath}.holder`, JSON.stringify({ host: hostname(), pid, started, lock: lockId, lockId }));
+	return lockPath;
+}
+
 describe("concurrent first restores of one repository into a new store (#4951)", () => {
 	test(
 		"eight processes restoring different snapshots of one repository into a new store all restore exactly (#4951)",
@@ -164,9 +211,8 @@ describe("concurrent first restores of one repository into a new store (#4951)",
 				await Promise.all(results.map((result) => headOf(result.path!))),
 				snapshots.map((snapshot) => snapshot.head),
 			);
-			// Neither a temporary store nor a lock outlives the restores.
 			const store = objectStorePath(sandbox.path("store"), snapshots[0]!.remotes);
-			assert.deepEqual(readdirSync(dirname(store)), [basename(store)]);
+			assertStoreHasNoLeftovers(store);
 		},
 		CONCURRENT_CHILDREN_TIMEOUT_MS,
 	);
@@ -188,6 +234,31 @@ describe("concurrent first restores of one repository into a new store (#4951)",
 		},
 		CONCURRENT_CHILDREN_TIMEOUT_MS,
 	);
+
+	test("two restores racing to recover a dead lock cannot both publish into the same checkout (#6800)", async () => {
+		const snapshots = await snapshotsOfOneRepository(2);
+		const storeDir = sandbox.path("store");
+		const store = objectStorePath(storeDir, snapshots[0]!.remotes);
+		leaveRepositoryLock(store, exitedPid());
+		const target = sandbox.path("target");
+		const results = await restoreConcurrently("exact", snapshots, storeDir, target);
+		const winner = results.findIndex((result) => result.status === "restored");
+		assert.equal(results.filter((result) => result.status === "restored").length, 1, JSON.stringify(results));
+		assert.equal(await headOf(target), snapshots[winner]!.head);
+		assert.equal(readFileSync(join(target, "state.txt"), "utf8"), `state ${winner}\n`);
+		assertStoreHasNoLeftovers(store);
+	});
+});
+
+test("an old holder's release does not remove a replacement lock directory (#6800)", async () => {
+	const file = sandbox.path("shared");
+	const release = await lockSharedWithHolder(file, { realpath: false, stale: LEGACY_STALE_MS });
+	const lockPath = `${file}.lock`;
+	// As when an older version reaps a stalled holder's lock, before the holder can see the replacement.
+	rmSync(lockPath, { recursive: true });
+	mkdirSync(lockPath);
+	await release();
+	assert.ok(existsSync(lockPath), "the old holder removed the replacement's lock");
 });
 
 describe("the shared store's cross-process lock and initialisation (#4951)", () => {
@@ -203,7 +274,7 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		const { path } = await restoreWorktree(snapshot, { storeDir });
 		assert.equal(await headOf(path), snapshot.head);
 		assert.equal(existsSync(join(store, "objects", "leftover")), true);
-		assert.deepEqual(readdirSync(dirname(store)), [basename(store)]);
+		assertStoreHasNoLeftovers(store);
 	});
 
 	test("a restore into an existing store leaves its configuration alone (#4951)", async () => {
@@ -225,9 +296,117 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		assert.equal(readFileSync(config, "utf8"), content);
 	});
 
-	test("a restore waits for another process's repository lock, then restores (#4951)", async () => {
+	test.skipIf(process.platform === "win32")(
+		"a restoring process publishes its PID and process start before opening the Git store (#6800)",
+		async () => {
+			const { snapshot, storeDir, store } = await oneSnapshot();
+			const entered = sandbox.path("started-init");
+			const resume = sandbox.path("resume-init");
+			const shim = sandbox.path("gated-git");
+			writeFileSync(
+				shim,
+				`#!/bin/sh
+case " $* " in *' init '*)
+  : > "$ENTERED_INIT"
+  while [ ! -f "$RESUME_INIT" ]; do sleep 0.05; done
+  ;;
+esac
+exec "$REAL_GIT" "$@"
+`,
+				{ mode: 0o700 },
+			);
+			const job = sandbox.path("holder-job.json");
+			writeFileSync(
+				job,
+				JSON.stringify({
+					mode: "exact",
+					snapshot,
+					storeDir,
+					git: {
+						path: shim,
+						env: {
+							...sandbox.executable.env,
+							ENTERED_INIT: entered,
+							RESUME_INIT: resume,
+							REAL_GIT: sandbox.executable.path,
+						},
+					},
+				}),
+			);
+			const child = spawn(bunExecutable(), [CHILD, job], { stdio: ["pipe", "pipe", "pipe"] });
+			const output = linesOf(child);
+			await output.next("ready");
+			child.stdin.end("go\n");
+			try {
+				await vi.waitFor(() => assert.ok(existsSync(entered), "Git has not entered the gated store init"), {
+					timeout: RECLAIM_BUDGET_MS,
+				});
+				const holder = JSON.parse(readFileSync(`${store}.lock.holder`, "utf8"));
+				assert.equal(holder.pid, child.pid);
+				const started = await processStartTokenAsync(child.pid!);
+				assert.match(started ?? "", /^[0-9a-f]{12}$/);
+				assert.equal(holder.started, started);
+			} finally {
+				writeFileSync(resume, "");
+				const result = JSON.parse(await output.next("{")) as ChildResult;
+				assert.equal(result.status, "restored", result.error);
+			}
+		},
+	);
+
+	test("a repository lock with a dead holder is reclaimed without waiting for its heartbeat to expire (#6800)", async () => {
+		const { snapshot, storeDir, store } = await oneSnapshot();
+		const lockPath = leaveRepositoryLock(store, exitedPid());
+		const { path } = await restoreWorktree(snapshot, { storeDir, signal: AbortSignal.timeout(RECLAIM_BUDGET_MS) });
+		assert.equal(await headOf(path), snapshot.head);
+		assert.equal(existsSync(lockPath), false);
+		assert.equal(existsSync(`${lockPath}.holder`), false);
+	});
+
+	test.skipIf(!["darwin", "linux", "win32"].includes(process.platform))(
+		"a repository lock with a reused PID is reclaimed without waiting for the heartbeat (#6800)",
+		async () => {
+			const { snapshot, storeDir, store } = await oneSnapshot();
+			const currentStart = await processStartTokenAsync(process.pid);
+			assert.match(currentStart ?? "", /^[0-9a-f]{12}$/);
+			// The PID exists but its current process has a different (kernel-reported) start time.
+			const recordedStart = currentStart === "0123456789ab" ? "abcd01234567" : "0123456789ab";
+			leaveRepositoryLock(store, process.pid, recordedStart);
+			const { path } = await restoreWorktree(snapshot, { storeDir, signal: AbortSignal.timeout(RECLAIM_BUDGET_MS) });
+			assert.equal(await headOf(path), snapshot.head);
+		},
+	);
+
+	test("a live holder keeps its repository lock even after the heartbeat expires, and the restore shows why it waits (#6800)", async () => {
+		const { snapshot, storeDir, store } = await oneSnapshot();
+		const lockPath = leaveRepositoryLock(
+			store,
+			process.pid,
+			await processStartTokenAsync(process.pid),
+			LEGACY_STALE_MS + 1_000,
+		);
+		let notice!: (message: string) => void;
+		const waiting = new Promise<string>((resolve) => {
+			notice = resolve;
+		});
+		const restoring = withRepositoryLockProgress(notice, () =>
+			restoreWorktree(snapshot, { storeDir, signal: AbortSignal.timeout(RECLAIM_BUDGET_MS) }),
+		);
+		try {
+			const message = await Promise.race([waiting, restoring.then(() => assert.fail("restore did not wait"))]);
+			assert.match(message, /Waiting for another Atomic process restoring this repository/);
+			assert.equal(existsSync(store), false);
+		} finally {
+			rmSync(lockPath, { recursive: true, force: true });
+			await restoring;
+		}
+		assert.equal(await headOf((await restoring).path), snapshot.head);
+	});
+
+	test("a legacy repository lock inside the 30-second window keeps the restore waiting (#6800)", async () => {
 		const { snapshot, storeDir, store } = await oneSnapshot();
 		mkdirSync(`${store}.lock`, { recursive: true });
+		ageLock(`${store}.lock`, LEGACY_STALE_MS - 5_000);
 		let restored = false;
 		const restoring = restoreWorktree(snapshot, { storeDir }).then((result) => {
 			restored = true;
@@ -240,12 +419,11 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 		assert.equal(await headOf((await restoring).path), snapshot.head);
 	});
 
-	test("a repository lock its stopped holder no longer refreshes is taken once stale (#4951)", async () => {
+	test("a legacy repository lock can be reclaimed just past the 30-second window (#6800)", async () => {
 		const { snapshot, storeDir, store } = await oneSnapshot();
 		mkdirSync(`${store}.lock`, { recursive: true });
-		const past = new Date(Date.now() - 120_000);
-		utimesSync(`${store}.lock`, past, past);
-		const { path } = await restoreWorktree(snapshot, { storeDir });
+		ageLock(`${store}.lock`, LEGACY_STALE_MS + 1_000);
+		const { path } = await restoreWorktree(snapshot, { storeDir, signal: AbortSignal.timeout(RECLAIM_BUDGET_MS) });
 		assert.equal(await headOf(path), snapshot.head);
 		assert.equal(existsSync(`${store}.lock`), false);
 	});
@@ -278,7 +456,7 @@ describe("the shared store's cross-process lock and initialisation (#4951)", () 
 			setPlatform(platform);
 			assert.equal(lockRefusals.refused, 3);
 			assert.equal(await headOf(path), snapshot.head);
-			assert.deepEqual(readdirSync(dirname(store)), [basename(store)]);
+			assertStoreHasNoLeftovers(store);
 		});
 
 		test(

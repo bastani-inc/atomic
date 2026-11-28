@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "vitest";
+import { lockHolderPath } from "../../packages/coding-agent/src/core/lock-holder.js";
 import { removeRestoredWorktree } from "../../packages/coding-agent/src/core/worktree-snapshot/index.js";
 import { type SpawnedProcess, sleep } from "../helpers/runtime.js";
 import {
@@ -13,6 +14,7 @@ import {
 	RESTORE_LOCK_STALE_MS,
 	result,
 	retry,
+	storedRepositories,
 	waitFor,
 } from "./worktree-snapshot-restore-crash-helpers.js";
 
@@ -26,8 +28,8 @@ test.skipIf(process.platform === "win32").each([
 		try {
 			const store = f.sandbox.path("host");
 			const first = await retry(f, store);
-			const repositories = join(store, "repositories");
-			const repo = join(repositories, readdirSync(repositories)[0]!);
+			const [repo] = storedRepositories(store);
+			assert.ok(repo);
 			const id = randomUUID();
 			const staging = join(store, "worktrees", stagingName(id));
 			const target = join(store, "worktrees", `unused-${id}`);
@@ -96,7 +98,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-	"a restore stopped past its lock's stale window is swept and fails typed when resumed (#4245)",
+	"a restore stopped past its legacy lock's stale window is swept and fails typed when resumed (#4245)",
 	async () => {
 		const f = await fixture();
 		let stopped: SpawnedProcess | undefined;
@@ -104,6 +106,10 @@ test.skipIf(process.platform === "win32")(
 			const store = f.sandbox.path("host");
 			stopped = child(f, store, "stop");
 			await waitFor(f.ready);
+			const [repo] = storedRepositories(store);
+			assert.ok(repo);
+			// An older Atomic only published the heartbeat, so its suspended process does not prevent takeover.
+			rmSync(lockHolderPath(`${repo}.lock`), { force: true });
 			await sleep(RESTORE_LOCK_STALE_MS + 2_000);
 			const recovered = await retry(f, store);
 			writeFileSync(f.go, "continue");
