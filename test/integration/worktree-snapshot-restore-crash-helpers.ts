@@ -178,7 +178,20 @@ export async function assertSigkillRestorePhases(phases: readonly string[], maxG
 			const outcome = await result(killed);
 			assert.equal(killed.signalCode, "SIGKILL", `${phase}: ${outcome.stderr}`);
 			const worktrees = join(store, "worktrees");
-			if (existsSync(worktrees)) assert.ok(readdirSync(worktrees).every((name) => /^\.s-[0-9a-f]{12}$/.test(name)));
+			if (existsSync(worktrees)) {
+				const publication = ".atomic-fence";
+				if (phase === "move") {
+					// The unverified checkout is still in staging; only its durable fence can exist at this point.
+					const [marker, ...other] = readdirSync(join(worktrees, publication), { withFileTypes: true });
+					assert.ok(marker?.isFile());
+					assert.deepEqual(other, []);
+				}
+				assert.ok(
+					readdirSync(worktrees).every(
+						(name) => /^\.s-[0-9a-f]{12}$/.test(name) || (phase === "move" && name === publication),
+					),
+				);
+			}
 			ageLocks(store);
 			const path = await retry(f, store);
 			await assertHealthy(f, store, [path]);
