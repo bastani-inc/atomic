@@ -78,11 +78,14 @@ await credentials.modify("kimi-coding", async () => ({
 const models = createModels({ credentials });
 models.setProvider(kimiCodingProvider());
 const auth = await models.getAuth("kimi-coding");
-// An aborted request: Bedrock's implementation and the AWS SDK load, nothing is sent.
+// Abort during payload preparation after the AWS SDK loads, before anything can be sent.
 const model = { id: "fixture", name: "fixture", api: "bedrock-converse-stream", provider: "amazon-bedrock",
 	baseUrl: "https://bedrock.example", reasoning: false, input: ["text"], contextWindow: 1000, maxTokens: 100,
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
-const bedrock = await bedrockConverseStreamApi().stream(model, { messages: [] }, { signal: AbortSignal.abort() }).result();
+const cancel = new AbortController();
+const bedrock = await bedrockConverseStreamApi().stream(model, { messages: [] }, {
+	signal: cancel.signal, onPayload: () => { cancel.abort(); },
+}).result();
 console.log(JSON.stringify({ auth, bedrock: bedrock.stopReason }));
 process.exit(0);
 `,

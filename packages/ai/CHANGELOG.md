@@ -4,10 +4,18 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in idempotency key for OpenAI-compatible Chat Completions and Responses endpoints that support it, so retrying the same request can avoid a duplicate charge. If the endpoint reports an idempotency conflict, Atomic stops retrying that request ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Select `google-decisions/gemini-decision-1` to ask yes/no, choice, or score questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
+
 ### Fixed
 
+- OpenAI Chat Completions and Responses requests now carry a fresh tracing ID on each attempt without changing prompt caching ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Gemini, Vertex, Pi, and Bedrock honor the request timeout before response headers. Keepalive pings, empty updates, and metadata no longer hide a stalled stream, and unresponsive callbacks no longer prevent cancellation or timeouts ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
 - Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
 - Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.
+- Z.ai and Zhipu Coding CN can now trace each request attempt, including retries, using a unique ID ([#6798](https://github.com/bastani-inc/atomic/issues/6798)).
 
 ## [0.10.11] - 2026-11-27
 

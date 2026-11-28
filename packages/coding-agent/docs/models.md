@@ -102,6 +102,34 @@ Some OpenAI-compatible servers (such as Ollama, vLLM, or SGLang) reject the `dev
 }
 ```
 
+### Request tracing and duplicate charges
+
+- **[`X-Client-Request-Id`](https://developers.openai.com/api/reference/overview#supplying-your-own-request-id-with-x-client-request-id)** lets OpenAI look up a request, even if the connection dropped before it returned an `x-request-id`. By default, Atomic sends a fresh UUID for every Chat Completions or Responses attempt to `api.openai.com`, including retries. This doesn't change the session ID or prompt-cache key. Tracing IDs, including Cloudflare's `cf-aig-event-id`, **do not prevent duplicate execution or billing**.
+- **Z.ai and Zhipu Coding CN** get a fresh request ID on every attempt, including retries. The ID helps the provider look up a request that timed out; it does not prevent duplicate work or charges.
+- **`Idempotency-Key`** asks a supporting endpoint not to run the same operation twice. Atomic keeps the key for retries of the same request and uses a new one for the next request. This is off by default. Only enable it for models using `openai-completions` or `openai-responses` whose endpoint explicitly documents support. Whether a duplicate is billed, and whether a retry can retrieve the original answer, depends on the endpoint.
+
+For example, [OP Inference supports idempotency keys for Chat Completions](https://docs.opinference.com/docs/routing/idempotency). Add this provider to `~/.atomic/agent/models.json`, set `OP_API_KEY` in the environment where you launch Atomic, and select `/model op-inference/openai/gpt-oss-120b`:
+
+```json
+{
+  "providers": {
+    "op-inference": {
+      "baseUrl": "https://api.opinference.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$OP_API_KEY",
+      "models": [
+        {
+          "id": "openai/gpt-oss-120b",
+          "compat": { "sendIdempotencyKey": true }
+        }
+      ]
+    }
+  }
+}
+```
+
+OP Inference returns a `409 idempotency_conflict` for a duplicate chat completion instead of replaying the answer. Atomic stops retrying that request when it gets this error. If you configured a fallback model, Atomic can still try it as a new request, which may incur a separate charge. Don't set a static `Idempotency-Key` in `headers`: a key must never be shared between unrelated requests.
+
 ### Prompt cache lifetimes
 
 Declare `promptCache` with positive lifetimes in seconds for `short` and `long` cache-retention tiers when configuring a custom model or overriding a built-in model:
@@ -216,6 +244,7 @@ Classifier models answer typed questions (`choice`, `bool`, `score`) about struc
 
 Built-in classifiers:
 
+- **Gemini Decisions:** `google-decisions/gemini-decision-1` answers yes/no, choice, and score questions about text and images. It uses your saved `/login google` API key, `GEMINI_API_KEY`, or `GOOGLE_API_KEY`. See [Gemini Decisions](/providers#gemini-decisions) for supported inputs and limits.
 - **OpenAI Decisions:** `openai-decisions/gpt-6-luna` via OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions). It has no `/login` entry and reuses the first OpenAI API key found (`openai-api`, `openai` API key, then `OPENAI_API_KEY`), skipping ChatGPT sign-in. It accepts up to 128 images and up to 922K tokens; requests above roughly 600K tokens may hit a gateway 504 timeout that is not retried. (`openai/gpt-6-luna` always selects the chat model.)
 - **TypeSafe Jev (direct):** `typesafe/jev-latest` and `typesafe/jev-1.14.0` (up to 262K tokens with PNG/JPEG images; see [TypeSafe Jev](/providers#typesafe-jev)).
 - **Cloudflare Workers AI:** Cloudflare Clef (`@cf/cloudflare/clef`, `@cf/cloudflare/clef-flash`, `@cf/cloudflare/clef-omni`, up to four PNG/JPEG/WebP images) and TypeSafe Jev (`typesafe/jev`, `typesafe/jev-1.14.0`, PNG/JPEG images).

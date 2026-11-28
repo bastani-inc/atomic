@@ -30,7 +30,10 @@ import { getIdentityHeaders } from "../utils/identity.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { getRetryAfterMs } from "../utils/retry-hints.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { admitFetch } from "../utils/request-admission.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { fetchWithResponseTimeout } from "../utils/provider-waits/timeout.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { ownedSlice } from "../utils/text.ts";
@@ -387,7 +390,8 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 	const convertEvent = createEventConverter(model);
 
 	void (async () => {
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, eventStream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 		try {
 			const apiKey = options?.apiKey;
 			if (!apiKey) {
@@ -416,7 +420,8 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				payload = nextPayload;
 			}
 
-			const response = await transportFetch(options?.fetch)(url, {
+			const fetch = transportFetch(await admitFetch(options?.fetch, streamDeadline.signal));
+			const response = await fetchWithResponseTimeout(fetch, options?.timeoutMs)(url, {
 				method: "POST",
 				headers: providerHeadersToRecord(
 					getIdentityHeaders(model, options?.identity),
@@ -435,6 +440,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 			await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 
 			if (!response.ok) {
+				streamDeadline.signal?.throwIfAborted();
 				const body = await response.text();
 				throw createPiMessagesResponseError(model, url, response, body);
 			}
@@ -442,11 +448,7 @@ export const stream: StreamFunction<"pi-messages", PiMessagesOptions> = (
 				throw new Error(`${model.provider} response has no body`);
 			}
 
-			for await (const piEvent of withStreamDeadline(
-				readPiMessagesEvents(response.body, streamDeadline.signal),
-				streamDeadline.deadlineMs,
-				streamDeadline.abort,
-			)) {
+			for await (const piEvent of streamDeadline.wrap(readPiMessagesEvents(response.body, streamDeadline.signal))) {
 				await options?.onProviderStreamEvent?.(piEvent, model);
 				const event = convertEvent(piEvent);
 				eventStream.push(event);

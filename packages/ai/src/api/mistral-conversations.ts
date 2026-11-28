@@ -24,7 +24,9 @@ import { getIdentityHeaders } from "../utils/identity.ts";
 import { admitFetch } from "../utils/request-admission.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { ServerSentEventDecoder } from "../utils/sse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { withResponseTimeout } from "../utils/provider-waits/timeout.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
 import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
@@ -140,7 +142,8 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 
 	(async () => {
 		const output = createOutput(model);
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const apiKey = options?.apiKey;
@@ -169,7 +172,7 @@ export const stream: StreamFunction<"mistral-conversations", MistralOptions> = (
 				model,
 				output,
 				stream,
-				withStreamDeadline(mistralStream, streamDeadline.deadlineMs, streamDeadline.abort),
+				streamDeadline.wrap(mistralStream),
 				options?.onProviderStreamEvent,
 			);
 
@@ -340,24 +343,12 @@ async function requestMistralStream(
 	// must not be cut off by a fixed deadline; body stalls are left to the stream idle deadline.
 	const timeoutMs = options?.timeoutMs ?? 60_000;
 	const fetch = transportFetch(await admitFetch(options?.fetch, requestSignal));
-	const headerTimeoutSignal = AbortSignal.timeout(timeoutMs);
-	const combinedSignal = combineAbortSignals([requestSignal, headerTimeoutSignal]);
-	let response: Response;
-	try {
-		response = await fetch(url, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(toMistralWirePayload(payload)),
-			signal: combinedSignal.signal,
-		});
-	} catch (error) {
-		if (headerTimeoutSignal.aborted && !requestSignal?.aborted) {
-			throw new Error(`Mistral response headers timed out after ${timeoutMs}ms`);
-		}
-		throw error;
-	} finally {
-		combinedSignal.cleanup();
-	}
+	const response = await withResponseTimeout(timeoutMs, requestSignal, (signal) => fetch(url, {
+		method: "POST",
+		headers,
+		body: JSON.stringify(toMistralWirePayload(payload)),
+		signal,
+	}), "Mistral");
 
 	await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
 

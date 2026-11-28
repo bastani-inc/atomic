@@ -1,5 +1,6 @@
 import type { Api, AssistantMessage, AssistantMessageEvent, Model, ProviderStreams } from "../types.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
+import { withProviderTimeout } from "../utils/provider-waits/timeout.ts";
 
 function createSetupErrorMessage(
 	model: Model<Api>,
@@ -37,26 +38,25 @@ async function forwardStream(
 	target: AssistantMessageEventStream,
 	source: AsyncIterable<AssistantMessageEvent>,
 ): Promise<void> {
-	for await (const event of source) {
-		target.push(event);
-	}
+	for await (const event of source) target.push(event);
 	target.end(hasResult(source) ? await source.result() : undefined);
 }
 
 /**
  * Returns a stream synchronously while running async setup (auth resolution,
- * lazy module loading) behind it. Setup failures terminate the stream with an
- * error event, reported as aborted when the request's `signal` is aborted.
+ * lazy module loading) behind it. Setup is interruptible even when it ignores
+ * cancellation, and uses the request timeout (zero applies only to dispatch).
  */
 export function lazyStream(
 	model: Model<Api>,
-	setup: () => Promise<AsyncIterable<AssistantMessageEvent>>,
+	setup: (signal: AbortSignal) => Promise<AsyncIterable<AssistantMessageEvent>>,
 	signal?: AbortSignal,
+	timeoutMs?: number,
 ): AssistantMessageEventStream {
 	const outer = new AssistantMessageEventStream();
 	const startedAt = Date.now();
 
-	setup()
+	withProviderTimeout(timeoutMs === 0 ? undefined : timeoutMs, signal, setup, "Provider request setup")
 		.then((inner) => forwardStream(outer, inner))
 		.catch((error) => {
 			const reason = signal?.aborted ? "aborted" : "error";
@@ -113,21 +113,31 @@ export function lazyApi(load: () => Promise<ProviderStreams>, capabilities?: Laz
 
 	const api: ProviderStreams = {
 		stream: (model, context, options) =>
-			lazyStream(model, async () => (await loadOnce()).stream(model, context, options), options?.signal),
+			lazyStream(model, async (signal) => {
+				const implementation = await loadOnce();
+				signal.throwIfAborted();
+				return implementation.stream(model, context, options);
+			}, options?.signal, options?.timeoutMs),
 		streamSimple: (model, context, options) =>
-			lazyStream(model, async () => (await loadOnce()).streamSimple(model, context, options), options?.signal),
+			lazyStream(model, async (signal) => {
+				const implementation = await loadOnce();
+				signal.throwIfAborted();
+				return implementation.streamSimple(model, context, options);
+			}, options?.signal, options?.timeoutMs),
 	};
 
 	if (capabilities?.fetchDeferred) {
 		api.fetchDeferred = (model, handle, options) =>
 			lazyStream(
 				model,
-				async () => {
+				async (signal) => {
 					const implementation = await loadOnce();
+					signal.throwIfAborted();
 					if (!implementation.fetchDeferred) throw new Error("API does not support deferred responses");
 					return implementation.fetchDeferred(model, handle, options);
 				},
 				options?.signal,
+				options?.timeoutMs,
 			);
 	}
 	if (capabilities?.cancelDeferred) {

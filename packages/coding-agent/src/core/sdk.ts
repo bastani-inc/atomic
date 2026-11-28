@@ -14,6 +14,7 @@ import {
 	type Usage,
 } from "@bastani/atomic-ai/compat";
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
+import { withProviderTimeout } from "@bastani/atomic-ai/utils/provider-waits/timeout";
 import { getAgentDir } from "../config.js";
 import { nativeModuleProblem, nativeModuleUnavailable } from "../utils/native-module.ts";
 import { resolvePath } from "../utils/paths.ts";
@@ -78,6 +79,7 @@ import { ModelRuntime } from "./model-runtime.js";
 import { type ModelRuntimeSimpleStreamOptions, mergeHeaders } from "./model-runtime-streaming.ts";
 import { sanitizeOpenAIResponsesPayload } from "./openai-responses-payload-sanitizer.ts";
 import { scrubPreCompactionAssistantUsage } from "./provider-context-usage.ts";
+import { providerAdmissionTimeout } from "./provider-request-admission.js";
 import { notifySessionProviderRequestDispatched } from "./provider-request-dispatch.ts";
 import { currentResourceAdmission } from "./resource-admission-scope.ts";
 import { canCloneDefaultResourceDiscovery, DefaultResourceLoader } from "./resource-loader.ts";
@@ -794,11 +796,16 @@ async function constructAgentSession(
 				(session as unknown as AgentSessionInternalSurface)._requestContextProjectionTransform = undefined;
 			}
 			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
-			const prepare = async () => {
+			const providerRetrySettings = settingsManager.getProviderRetrySettings();
+			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
+			// SDKs treat timeout=0 as immediate. Use max int32 when the default idle timeout is disabled.
+			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
+			const prepareRequest = async (signal: AbortSignal) => {
 				const authResult = await modelRuntime.getRequestAuth(model, {
 					apiKey: streamOptions?.apiKey,
 					env: streamOptions?.env,
-					signal: streamOptions?.signal,
+					signal,
 				});
 				const compatibility = authResult ? undefined : await modelRuntime.getCompatibilityRequestConfigAsync(model);
 				if (!authResult && compatibility?.authHeader) {
@@ -814,12 +821,6 @@ async function constructAgentSession(
 					auth.baseUrl !== undefined && auth.baseUrl !== model.baseUrl
 						? { ...model, baseUrl: auth.baseUrl }
 						: model;
-				const providerRetrySettings = settingsManager.getProviderRetrySettings();
-				const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
-				// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
-				// Use max int32 to effectively disable the timeout.
-				const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
-				const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
 				const websocketConnectTimeoutMs =
 					streamOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 				const streamDeadlineMs = streamOptions?.streamDeadlineMs ?? settingsManager.getStreamDeadlineMs();
@@ -834,6 +835,7 @@ async function constructAgentSession(
 				const assembledHeaders = headerRunner?.hasHandlers("before_provider_headers")
 					? await headerRunner.emitBeforeProviderHeaders(mergedHeaders ?? {})
 					: mergedHeaders;
+				signal.throwIfAborted();
 				const extensionProvider = modelRuntime.getRegisteredProviderConfig(requestModel.provider);
 				const usesExtensionStream =
 					extensionProvider?.streamSimple !== undefined && requestModel.api === extensionProvider.api;
@@ -880,6 +882,7 @@ async function constructAgentSession(
 					fastRoute?.serviceTier !== undefined && !usesExtensionStream && extensionProvider?.aliasOf === undefined;
 				const requestOptions: ModelRuntimeSimpleStreamOptions = {
 					...fastRouteStreamOptions,
+					[providerAdmissionTimeout]: effectiveTimeoutMs,
 					onProviderStreamEvent,
 					preparedRequestAuth: {
 						resolution: authResult,
@@ -895,6 +898,13 @@ async function constructAgentSession(
 				};
 				return { authResult, requestModel, fastRouteStreamOptions, requestOptions, usesExtensionStream };
 			};
+			const prepare = () =>
+				withProviderTimeout(
+					timeoutMs === 0 ? effectiveTimeoutMs : timeoutMs,
+					streamOptions?.signal,
+					prepareRequest,
+					"Provider request setup",
+				);
 			const { authResult, requestModel, fastRouteStreamOptions, requestOptions, usesExtensionStream } =
 				await prepare();
 			if (streamOptions?.sessionId === requestSessionId()) {

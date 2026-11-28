@@ -28,14 +28,23 @@ export class ProviderRetryTransport {
 
 	private constructor(deadline: RetryDeadline, fetch: typeof globalThis.fetch) {
 		this.deadline = deadline;
-		this.fetch = wrapFetchPreservingAdmission(fetch, (send) =>
-			Object.assign((...args: Parameters<typeof fetch>) => {
+		this.fetch = wrapFetchPreservingAdmission(
+			fetch,
+			(send) => Object.assign((...args: Parameters<typeof fetch>) => {
 				if (this.retrying && retryDeadlineReached(deadline)) {
 					this.refusal = new RetryDeadlineError();
 					throw this.refusal;
 				}
 				return send(...args);
 			}, send),
+			(admit) => async (signal, outerDeadline) => {
+				try {
+					await admit(signal, this.retrying ? deadline : outerDeadline);
+				} catch (error) {
+					if (error instanceof RetryDeadlineError) this.refusal = error;
+					throw error;
+				}
+			},
 		);
 	}
 

@@ -34,8 +34,10 @@ import { providerHeadersToRecord } from "../utils/headers.ts";
 import { type ClientIdentity, getIdentityHeaders } from "../utils/identity.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { fetchWithResponseTimeout } from "../utils/provider-waits/timeout.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import { appendSystemMessageUpdates, getCurrentTools, getInitialSystemMessage } from "../utils/transcript.ts";
 import type { GoogleApiThinkingLevel, ResolvedGoogleThinkingLevel } from "./google-shared.ts";
@@ -105,15 +107,16 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			stopReason: "pending",
 			timestamp: Date.now(),
 		};
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 
 		try {
 			const apiKey = options && resolveApiKey(options);
 			// Create the client using either a Vertex API key, if provided, or ADC with project and location
 			const retryTransport = ProviderRetryTransport.for(options);
-			const fetch = retryTransport?.fetch ?? options?.fetch;
+			const fetch = fetchWithResponseTimeout(retryTransport?.fetch ?? options?.fetch, options?.timeoutMs);
 			const client = apiKey
-				? createClientWithApiKey(model, apiKey, options.headers, options.identity, fetch)
+				? createClientWithApiKey(model, apiKey, options?.headers, options?.identity, fetch)
 				: createClient(
 						model,
 						resolveProject(options),
@@ -144,7 +147,7 @@ export const stream: StreamFunction<"google-vertex", GoogleVertexOptions> = (
 			let currentBlock: TextContent | ThinkingContent | null = null;
 			const blocks = output.content;
 			const blockIndex = () => blocks.length - 1;
-			for await (const chunk of withStreamDeadline(googleStream, streamDeadline.deadlineMs, streamDeadline.abort)) {
+			for await (const chunk of streamDeadline.wrap(googleStream)) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				// Vertex uses the same @google/genai GenerateContentResponse type as Gemini.
 				// responseId is documented there as an output-only identifier for each response.

@@ -1,7 +1,8 @@
 import type OpenAI from "openai";
+import type { RetryDeadline } from "../types.ts";
 
 interface FetchAdmission {
-	beforeRequest(signal?: AbortSignal): Promise<void>;
+	beforeRequest(signal?: AbortSignal, retryDeadline?: RetryDeadline): Promise<void>;
 	fetch: typeof globalThis.fetch;
 }
 
@@ -22,10 +23,14 @@ export function createFetchWithAdmission(
 export function wrapFetchPreservingAdmission(
 	fetch: typeof globalThis.fetch,
 	wrap: (fetch: typeof globalThis.fetch) => typeof globalThis.fetch,
+	wrapAdmission?: (beforeRequest: FetchAdmission["beforeRequest"]) => FetchAdmission["beforeRequest"],
 ): typeof globalThis.fetch {
 	const admission = getFetchAdmission(fetch);
 	if (!admission) return wrap(fetch);
-	return createFetchWithAdmission(wrap(admission.fetch), admission.beforeRequest);
+	return createFetchWithAdmission(
+		wrap(admission.fetch),
+		wrapAdmission ? wrapAdmission(admission.beforeRequest) : admission.beforeRequest,
+	);
 }
 
 export function getFetchAdmission(fetch?: typeof globalThis.fetch): FetchAdmission | undefined {
@@ -35,10 +40,11 @@ export function getFetchAdmission(fetch?: typeof globalThis.fetch): FetchAdmissi
 export async function admitFetch(
 	fetch: typeof globalThis.fetch | undefined,
 	signal?: AbortSignal,
+	retryDeadline?: RetryDeadline,
 ): Promise<typeof globalThis.fetch> {
 	const admission = getFetchAdmission(fetch);
 	if (!admission) return fetch ?? globalThis.fetch;
-	await admission.beforeRequest(signal);
+	await admission.beforeRequest(signal, retryDeadline);
 	return admission.fetch;
 }
 

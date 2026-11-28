@@ -47,7 +47,6 @@ import {
 	formatProviderError,
 	normalizeProviderError,
 } from "../utils/error-body.ts";
-import { recordTlsCertificateRefusal, transportFetch } from "../utils/tls-certificate.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -59,16 +58,18 @@ import {
 } from "../utils/openrouter-cost.ts";
 import { getAtomicEnvValue } from "../utils/provider-env.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
-import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { admitOpenAIRequests, getFetchAdmission, wrapFetchPreservingAdmission } from "../utils/request-admission.js";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
+import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { DoneEventWatch } from "../utils/sse.ts";
-import { createStreamDeadline, withStreamDeadline } from "../utils/stream-deadline.ts";
+import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
+import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { ToolCallArgumentsStream } from "../utils/streaming-json.ts";
-import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import { recordLowestThinkingOffFallback, recordThinkingOffFallback } from "../utils/thinking-off.ts";
+import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
+import { TOOL_RESULTS_BRIDGE_TEXT } from "../utils/tool-results-bridge.ts";
 import {
 	getDeclaredTools,
 	resolveRequestTranscript,
@@ -91,7 +92,8 @@ import {
 	preserveCopilotIntegrationHeader,
 } from "./github-copilot-headers.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { RetryHintOpenAI } from "./openai-retry-hint-client.ts";
+import { isOpenAITracingEndpoint, openAIRequestFetch } from "./openai-request-headers.js";
+import { openAIIdempotencyConflictCode, RetryHintOpenAI } from "./openai-retry-hint-client.ts";
 import {
 	buildBaseOptions,
 	clampThinkingBudgetToAnswerRoom,
@@ -208,6 +210,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	| "vllmPriority"
 	| "supportsTemperature"
 	| "supportsForcedToolChoice"
+	| "sendIdempotencyKey"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
 	promptCacheKeyMode?: OpenAICompletionsCompat["promptCacheKeyMode"];
@@ -406,7 +409,8 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 		};
 
-		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal);
+		const streamDeadline = createStreamDeadline(options?.streamDeadlineMs, options?.signal, stream);
+		options = withBoundedProviderHooks(options, streamDeadline);
 		const streamAttempt = new GitHubCopilotStreamAttempt();
 		// GitHub Copilot sometimes ends a response stream normally without a finish reason (seen with Gemini models);
 		// whether the stream delivered its final `[DONE]` tells such a response from a stream that was cut off.
@@ -435,6 +439,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				cacheSessionId,
 				compat,
 				options?.apiKey,
+				options?.logicalRequestId,
 			);
 			const thinkingOffFallback = options?.reasoningEffort
 				? undefined
@@ -466,6 +471,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 					maxRetries: options?.maxRetries,
 					maxRetryDelayMs: options?.maxRetryDelayMs,
 					signal: streamDeadline.signal,
+					noRetry: (error) => openAIIdempotencyConflictCode(error) !== undefined,
 				},
 				retryTransport,
 			);
@@ -651,9 +657,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 				return { block, state };
 			};
 
-			for await (const chunk of streamAttempt.observe(
-				withStreamDeadline(openaiStream, streamDeadline.deadlineMs, streamDeadline.abort),
-			)) {
+			for await (const chunk of streamAttempt.observe(streamDeadline.wrap(openaiStream))) {
 				await options?.onProviderStreamEvent?.(chunk, model);
 				if (!chunk || typeof chunk !== "object") continue;
 
@@ -831,7 +835,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			}
 			output.stopReason = options?.signal?.aborted || error instanceof RetryDeadlineError ? "aborted" : "error";
 			output.errorMessage = formatProviderError(normalizeProviderError(error));
-			appendProviderResponseFailureDiagnostic(output, error);
+			appendProviderResponseFailureDiagnostic(output, error, openAIIdempotencyConflictCode(error));
 			recordTlsCertificateRefusal(output, error);
 			output.retryAfterMs = error instanceof Error ? getProviderRetryAfterMs(error) : undefined;
 			// Some providers via OpenRouter give additional information in this field.
@@ -900,6 +904,7 @@ function createClient(
 	sessionId?: string,
 	compat: ResolvedOpenAICompletionsCompat = getCompat(model),
 	copilotApiKey?: string,
+	logicalRequestId?: string,
 ) {
 	const headers: ProviderHeaders = { ...getIdentityHeaders(model, identity), ...model.headers };
 	if (model.provider === "github-copilot") {
@@ -915,6 +920,7 @@ function createClient(
 		Object.assign(headers, copilotHeaders);
 	}
 
+	const tracesRequests = isOpenAITracingEndpoint(model.baseUrl);
 	const sessionAffinityHeaders: ProviderHeaders = {};
 	if (sessionId && compat.sendSessionAffinityHeaders) {
 		if (compat.sessionAffinityFormat === "openrouter") {
@@ -923,7 +929,7 @@ function createClient(
 			if (compat.sessionAffinityFormat === "openai") {
 				sessionAffinityHeaders.session_id = sessionId;
 			}
-			sessionAffinityHeaders["x-client-request-id"] = sessionId;
+			if (!tracesRequests) sessionAffinityHeaders["x-client-request-id"] = sessionId;
 			sessionAffinityHeaders["x-session-affinity"] = sessionId;
 		}
 	}
@@ -938,7 +944,7 @@ function createClient(
 			apiKey,
 			baseURL: model.baseUrl,
 			dangerouslyAllowBrowser: true,
-			fetch: transportFetch(getFetchAdmission(fetch)?.fetch ?? fetch),
+			fetch: openAIRequestFetch(model, getFetchAdmission(fetch)?.fetch ?? fetch, headers, logicalRequestId),
 			// Affinity defaults yield to explicit model and request headers, including null suppression.
 			defaultHeaders: { ...sessionAffinityHeaders, ...headers },
 		}),

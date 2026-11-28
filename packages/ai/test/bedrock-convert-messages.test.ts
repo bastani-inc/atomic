@@ -87,12 +87,13 @@ const novaModel: Model<"bedrock-converse-stream"> = {
 
 async function capturePayload(context: Context, model = baseModel): Promise<unknown> {
 	let capturedPayload: unknown;
+	const controller = new AbortController();
 	const s = streamBedrock(model, normalizeContext(context), {
 		cacheRetention: "none",
-		signal: AbortSignal.abort(),
+		signal: controller.signal,
 		onPayload: (payload) => {
 			capturedPayload = payload;
-			return payload;
+			controller.abort();
 		},
 	});
 	for await (const event of s) {

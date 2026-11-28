@@ -6,6 +6,8 @@ import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { findTlsCertificateRefusal, transportFailure } from "../utils/tls-certificate.ts";
 
+export class InvalidClassifierJsonError extends SyntaxError {}
+
 export interface ClassifierHttpError extends Error {
 	status: number | undefined;
 	headers: Headers | undefined;
@@ -58,16 +60,27 @@ export function requiredNumber(label: string, value: unknown, field: string): nu
 	return value;
 }
 
+interface ClassifierRequestRules {
+	apiKeyHeader?: string;
+	noRetryStatuses?: readonly number[];
+	maxRequestBytes?: number;
+	noRetry?: (error: Error) => boolean;
+}
+
 function requestHeaders(
 	model: ClassifierModel<ClassifierApi>,
 	apiKey: string,
 	optionsHeaders?: ProviderHeaders,
 	identity?: ClientIdentity,
+	apiKeyHeader?: string,
 ): Record<string, string> {
 	return (
 		providerHeadersToRecord(
 			getIdentityHeaders(model, identity),
-			{ authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+			{
+				"content-type": "application/json",
+				...(apiKeyHeader ? { [apiKeyHeader]: apiKey } : { authorization: `Bearer ${apiKey}` }),
+			},
 			model.headers,
 			optionsHeaders,
 		) ?? {}
@@ -80,13 +93,23 @@ export async function postClassifierRequest(
 	model: ClassifierModel<ClassifierApi>,
 	body: unknown,
 	options: ClassifierOptions | undefined,
-	noRetryStatuses?: readonly number[],
+	rules?: ClassifierRequestRules,
 ): Promise<unknown> {
 	if (!options?.apiKey) throw new Error(`No API key for provider: ${model.provider}`);
 	const apiKey = options.apiKey;
 	let payload = body;
 	const transformed = await options.onPayload?.(payload, model);
 	if (transformed !== undefined) payload = transformed;
+	const serialized = JSON.stringify(payload);
+	if (
+		rules?.maxRequestBytes !== undefined &&
+		serialized.length > rules.maxRequestBytes / 3 &&
+		(serialized.length > rules.maxRequestBytes || new TextEncoder().encode(serialized).length > rules.maxRequestBytes)
+	) {
+		throw Object.assign(new Error(`${label} accepts at most ${rules.maxRequestBytes} bytes per request`), {
+			code: "request_too_large",
+		});
+	}
 	const retryTransport = ProviderRetryTransport.for(options);
 	const requestFetch = retryTransport?.fetch ?? options.fetch ?? globalThis.fetch;
 	const { response, json } = await retryProviderRequest(
@@ -99,12 +122,17 @@ export async function postClassifierRequest(
 			try {
 				const next = await requestFetch(url, {
 					method: "POST",
-					headers: requestHeaders(model, apiKey, options.headers, options.identity),
-					body: JSON.stringify(payload),
+					headers: requestHeaders(model, apiKey, options.headers, options.identity, rules?.apiKeyHeader),
+					body: serialized,
 					signal,
 				});
 				if (!next.ok) throw httpError(label, next, await next.text());
-				return { response: next, json: (await next.json()) as unknown };
+				try {
+					return { response: next, json: (await next.json()) as unknown };
+				} catch (error) {
+					if (error instanceof SyntaxError) throw new InvalidClassifierJsonError(error.message, { cause: error });
+					throw error;
+				}
 			} catch (error) {
 				if (timeoutSignal?.aborted && !options.signal?.aborted) throw timeoutError(options.timeoutMs!);
 				if (options.signal?.aborted) throw error;
@@ -128,7 +156,8 @@ export async function postClassifierRequest(
 			maxRetries: options.maxRetries ?? 2,
 			maxRetryDelayMs: options.maxRetryDelayMs,
 			signal: options.signal,
-			noRetryStatuses,
+			noRetryStatuses: rules?.noRetryStatuses,
+			noRetry: rules?.noRetry,
 		},
 		retryTransport,
 	);

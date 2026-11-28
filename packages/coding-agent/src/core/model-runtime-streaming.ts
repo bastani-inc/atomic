@@ -26,11 +26,12 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 } from "@bastani/atomic-ai";
+import { withProviderTimeout } from "@bastani/atomic-ai/utils/provider-waits/timeout";
 import { normalizeModelProvider } from "./azure-provider-compat.js";
 import { usesChatGptCodexTransport, withChatGptCodexTransportRouting } from "./fast-model-routing.ts";
 import { installCodexFastRouteWebSocketIdentity } from "./fast-model-routing-transport.ts";
 import type { ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
-import { admitProviderStream } from "./provider-request-admission.js";
+import { admitProviderStream, type ProviderAdmissionOptions } from "./provider-request-admission.js";
 
 export function mergeHeaders(
 	base: ProviderHeaders | undefined,
@@ -60,13 +61,15 @@ export interface PreparedRequestAuth {
 }
 
 export type ModelRuntimePreparedStreamOptions = StreamOptions &
-	ModelsRequestTransforms & {
+	ModelsRequestTransforms &
+	ProviderAdmissionOptions & {
 		preparedRequestAuth?: PreparedRequestAuth;
 	};
 
-export type ModelRuntimeSimpleStreamOptions = ModelsSimpleStreamOptions & {
-	preparedRequestAuth?: PreparedRequestAuth;
-};
+export type ModelRuntimeSimpleStreamOptions = ModelsSimpleStreamOptions &
+	ProviderAdmissionOptions & {
+		preparedRequestAuth?: PreparedRequestAuth;
+	};
 
 type ResolveAuth = (model: Model<Api>, overrides?: ModelRuntimeAuthOverrides) => Promise<AuthResult | undefined>;
 /** Whether an extension owns this model's transport, in which case it owns its serialization too. */
@@ -227,25 +230,33 @@ export class ModelRuntimeStreaming {
 		options: ModelRuntimePreparedStreamOptions | undefined,
 		invoke: (prepared: Awaited<ReturnType<ModelRuntimeStreaming["prepareRequest"]>>) => AssistantMessageEventStream,
 	): AssistantMessageEventStream {
-		const prepare = () => this.prepareRequest(model, options);
-		const reprepareCredentials = async (previous: Awaited<ReturnType<typeof prepare>>) => {
-			if (options?.signal?.aborted) return undefined;
-			await this.reloadCredentials();
-			const { preparedRequestAuth: previousAuth, ...callerOptions } = options ?? {};
-			const reprepared = previousAuth?.reprepare ? await previousAuth.reprepare() : undefined;
-			const next = reprepared
-				? await this.prepareRequest(reprepared.model, {
-						...callerOptions,
-						apiKey: reprepared.options.apiKey,
-						headers: reprepared.options.headers,
-						env: reprepared.options.env,
-						preparedRequestAuth: reprepared.options.preparedRequestAuth,
-					})
-				: await this.prepareRequest(model, callerOptions);
-			return next.authIdentity !== previous.authIdentity ? next : undefined;
-		};
+		const inSetup = <T>(operation: (signal: AbortSignal) => Promise<T>) =>
+			withProviderTimeout(
+				options?.timeoutMs === 0 ? undefined : options?.timeoutMs,
+				options?.signal,
+				operation,
+				"Provider request setup",
+			);
+		const prepare = () => inSetup((signal) => this.prepareRequest(model, { ...options, signal }));
 		const retry = (previous: Awaited<ReturnType<typeof prepare>>) =>
-			reprepareCredentials(previous).catch(() => undefined);
+			inSetup(async (signal) => {
+				await this.reloadCredentials();
+				signal.throwIfAborted();
+				const { preparedRequestAuth: previousAuth, ...callerOptions } = options ?? {};
+				const reprepared = previousAuth?.reprepare ? await previousAuth.reprepare() : undefined;
+				signal.throwIfAborted();
+				const next = reprepared
+					? await this.prepareRequest(reprepared.model, {
+							...callerOptions,
+							apiKey: reprepared.options.apiKey,
+							headers: reprepared.options.headers,
+							env: reprepared.options.env,
+							preparedRequestAuth: reprepared.options.preparedRequestAuth,
+							signal,
+						})
+					: await this.prepareRequest(model, { ...callerOptions, signal });
+				return next.authIdentity !== previous.authIdentity ? next : undefined;
+			}).catch(() => undefined);
 		const ownsTransport = (requestModel: Model<Api>) => this.ownsExtensionTransport(requestModel);
 		const iterate = async function* (): AsyncGenerator<AssistantMessageEvent> {
 			let prepared = await prepare();
@@ -362,14 +373,16 @@ export class ModelRuntimeStreaming {
 	): Promise<AssistantMessage> {
 		return lazyStream(
 			model,
-			async () => {
-				const prepared = await this.prepareRequest(model, options);
+			async (signal) => {
+				const prepared = await this.prepareRequest(model, { ...options, signal });
+				signal.throwIfAborted();
 				if (!prepared.provider.fetchDeferred) {
 					throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
 				}
 				return prepared.provider.fetchDeferred(prepared.model, handle, prepared.options as DeferredFetchOptions);
 			},
 			options?.signal,
+			options?.timeoutMs,
 		).result();
 	}
 

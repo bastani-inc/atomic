@@ -5,10 +5,12 @@ import { join } from "node:path";
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@bastani/atomic-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream } from "@bastani/atomic-ai/compat";
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getFixtureModel } from "../../../test/helpers/catalog-model-fixtures.ts";
+import { writeFileEnsuringDir } from "../../../test/helpers/runtime.js";
 import { AgentSession } from "../src/core/agent-session.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import { createAgentSession } from "../src/core/sdk.js";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
@@ -169,6 +171,94 @@ describe("AgentSession retry", () => {
 		expect(created.getCallCount()).toBe(2);
 		expect(events).toEqual(["start:1", "end:success=true"]);
 		expect(created.session.isRetrying).toBe(false);
+	});
+
+	it.each([
+		["reuses the idempotency key through provider and agent retries, but not the next prompt", false],
+		["goes straight to the fallback after an idempotency conflict", true],
+	] as const)("%s (#6794)", async (_behavior, conflict) => {
+		const baseUrl = "https://idempotent.example/v1";
+		const modelsPath = join(tempDir, "models.json");
+		await writeFileEnsuringDir(
+			modelsPath,
+			JSON.stringify({
+				providers: {
+					example: {
+						api: "openai-completions",
+						baseUrl,
+						apiKey: "test-key",
+						models: ["test-model", "fallback-model"].map((id) => ({ id, compat: { sendIdempotencyKey: true } })),
+					},
+				},
+			}),
+		);
+		const authStorage = AuthStorage.create(join(tempDir, "auth.json"));
+		const registry = await createModelRegistry(authStorage, modelsPath);
+		const model = registry.find("example", "test-model");
+		assert.ok(model, registry.getError());
+		const requests: Array<{ key: string | null; model: string }> = [];
+		const fetch = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+			assert.equal(String(input), `${baseUrl}/chat/completions`);
+			requests.push({
+				key: new Headers(init?.headers).get("idempotency-key"),
+				model: JSON.parse(String(init?.body)).model,
+			});
+			if (conflict && requests.length === 2) {
+				return new Response(
+					'{"error":{"code":"idempotency_conflict","message":"The original request already completed"}}',
+					{
+						status: 409,
+						headers: { "content-type": "application/json", "retry-after-ms": "1" },
+					},
+				);
+			}
+			if (requests.length <= 2) {
+				return new Response('{"error":{"message":"server overloaded"}}', {
+					status: 503,
+					headers: { "content-type": "application/json", "retry-after-ms": "1" },
+				});
+			}
+			return new Response(
+				'data: {"id":"test","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+				{ headers: { "content-type": "text/event-stream" } },
+			);
+		});
+		try {
+			({ session } = await createAgentSession({
+				cwd: tempDir,
+				agentDir: tempDir,
+				model,
+				authStorage,
+				modelRuntime: getModelRuntime(registry),
+				sessionManager: SessionManager.inMemory(tempDir),
+				settingsManager: SettingsManager.inMemory({
+					cacheWarming: "off",
+					fallbackModels: conflict ? ["example/fallback-model"] : undefined,
+					retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, provider: { maxRetries: conflict ? 2 : 1 } },
+				}),
+				builtins: { subagents: false, mcp: false, "web-access": false, intercom: false },
+			}));
+			await session.prompt("Test");
+			assert.deepEqual(
+				requests.map(({ model }) => model),
+				["test-model", "test-model", conflict ? "fallback-model" : "test-model"],
+			);
+			const [initial, providerRetry, continuation] = requests.map(({ key }) => key);
+			assert.ok(initial);
+			assert.equal(providerRetry, initial);
+			assert.ok(continuation);
+			if (conflict) {
+				assert.notEqual(continuation, initial);
+			} else {
+				assert.equal(continuation, initial);
+				await session.prompt("Test again");
+				assert.equal(requests.length, 4);
+				assert.ok(requests[3]?.key);
+				assert.notEqual(requests[3].key, initial);
+			}
+		} finally {
+			fetch.mockRestore();
+		}
 	});
 
 	it("caps agent retry delay (#8826)", async () => {

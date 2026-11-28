@@ -1004,6 +1004,7 @@ class ModelsImpl implements MutableModels {
 	>(
 		model: TModel,
 		options: TOptions | undefined,
+		setupSignal = options?.signal,
 	): Promise<{
 		requestModel: TModel;
 		requestOptions: Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>;
@@ -1012,8 +1013,9 @@ class ModelsImpl implements MutableModels {
 		const resolution = await this.getAuth(model, {
 			apiKey: options?.apiKey,
 			env: options?.env,
-			signal: options?.signal,
+			signal: setupSignal,
 		});
+		setupSignal?.throwIfAborted();
 		if (!resolution) {
 			throw new ModelsError("auth", `Provider is not configured: ${model.provider}`);
 		}
@@ -1051,14 +1053,12 @@ class ModelsImpl implements MutableModels {
 		const providerId = normalizeProviderId(model.provider);
 		if (providerId !== model.provider) model = { ...model, provider: providerId };
 		const transcript = normalizeContext(context);
-		return lazyStream(model, async () => {
+		return lazyStream(model, async (signal) => {
 			const provider = this.requireChatProvider(model);
-			const { requestModel, requestOptions } = await this.applyAuth(
-				model,
-				options as ModelsApiStreamOptions<Api> | undefined,
-			);
+			const { requestModel, requestOptions } = await this.applyAuth(model, options as ModelsApiStreamOptions<Api> | undefined, signal);
+			signal.throwIfAborted();
 			return provider.stream(requestModel, transcript, requestOptions as ApiStreamOptions<TApi>);
-		}, options?.signal);
+		}, options?.signal, options?.timeoutMs);
 	}
 
 	async complete<TApi extends Api>(
@@ -1073,11 +1073,12 @@ class ModelsImpl implements MutableModels {
 		const providerId = normalizeProviderId(model.provider);
 		if (providerId !== model.provider) model = { ...model, provider: providerId };
 		const transcript = normalizeContext(context);
-		return lazyStream(model, async () => {
+		return lazyStream(model, async (signal) => {
 			const provider = this.requireChatProvider(model);
-			const { requestModel, requestOptions } = await this.applyAuth(model, options);
+			const { requestModel, requestOptions } = await this.applyAuth(model, options, signal);
+			signal.throwIfAborted();
 			return provider.streamSimple(requestModel, transcript, requestOptions as SimpleStreamOptions);
-		}, options?.signal);
+		}, options?.signal, options?.timeoutMs);
 	}
 
 	async completeSimple(
@@ -1093,14 +1094,15 @@ class ModelsImpl implements MutableModels {
 		handle: DeferredHandle,
 		options?: ModelsDeferredFetchOptions,
 	): Promise<AssistantMessage> {
-		return lazyStream(model, async () => {
+		return lazyStream(model, async (signal) => {
 			const provider = this.requireChatProvider(model);
 			if (!provider.fetchDeferred) {
 				throw new ModelsError("provider", `Provider ${model.provider} does not support deferred responses`);
 			}
-			const { requestModel, requestOptions } = await this.applyAuth(model, options);
+			const { requestModel, requestOptions } = await this.applyAuth(model, options, signal);
+			signal.throwIfAborted();
 			return provider.fetchDeferred(requestModel, handle, requestOptions as DeferredFetchOptions);
-		}, options?.signal).result();
+		}, options?.signal, options?.timeoutMs).result();
 	}
 
 	async cancelDeferred(

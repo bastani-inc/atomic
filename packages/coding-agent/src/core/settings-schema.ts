@@ -718,7 +718,7 @@ export const SettingsSchema = Type.Object(
 		streamDeadlineMs: Type.Optional(
 			timeoutSetting({
 				description:
-					'Maximum idle gap between two provider stream events as milliseconds, a duration such as "30s", or "disabled"; 0 or "disabled" disables it.',
+					'Maximum wait for provider stream progress (keepalives do not count), as milliseconds, a duration such as "30s", or "disabled"; 0 or "disabled" disables the progress timer.',
 			}),
 		),
 		queueMode: Type.Optional(

@@ -364,6 +364,7 @@ async function inferClassifier<T extends TSchema>(
 				...(trace.retryDeadline === undefined ? {} : { retryDeadline: trace.retryDeadline }),
 				maxRetries:
 					request.retry?.enabled === false ? 0 : (request.retry?.maxRetries ?? DEFAULT_DECISION_RETRY.maxRetries),
+				maxRetryDelayMs: request.retry?.maxRetryDelayMs,
 			},
 		);
 	} catch (error) {
@@ -380,7 +381,7 @@ async function inferClassifier<T extends TSchema>(
 	if (result.stopReason === "aborted") throw new TerminalDecisionError(CLASSIFIER_ABORTED);
 	if (result.stopReason !== "stop")
 		throw withProviderFailure(
-			new ClassifierDecisionError(result.errorMessage, "request"),
+			new ClassifierDecisionError(result.errorMessage, result.code === "invalid-output" ? "answer" : "request"),
 			providerFailureSignal(result),
 		);
 	if (!result.answers || typeof result.answers !== "object" || typeof result.model !== "string")

@@ -505,6 +505,21 @@ const OPENAI_CLASSIFIER_MODELS: ClassifierModel<"openai-decisions">[] = [
 	},
 ];
 
+// https://aistudio.google.com/docs/models/gemini-decision-1
+const GOOGLE_CLASSIFIER_MODELS: ClassifierModel<"google-decisions">[] = [
+	{
+		type: "classifier",
+		id: "gemini-decision-1",
+		name: "Gemini Decision 1",
+		api: "google-decisions",
+		provider: "google-decisions",
+		baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+		input: ["text", "image"],
+		cost: { input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 262144,
+	},
+];
+
 // OpenAI Images API models, served by the openai-images provider. Standard-tier
 // prices from https://developers.openai.com/api/docs/pricing: `input` and `cacheRead`
 // are the text input rates and `output` is the image output rate. ModelCost has no
@@ -615,6 +630,7 @@ async function generateModels() {
 		...OPENCODE_CLASSIFIER_MODELS,
 		...CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS,
 		...OPENAI_CLASSIFIER_MODELS,
+		...GOOGLE_CLASSIFIER_MODELS,
 	];
 	for (const model of classifierModels) {
 		providers[model.provider] ??= { chat: {}, image: {}, classifier: {} };

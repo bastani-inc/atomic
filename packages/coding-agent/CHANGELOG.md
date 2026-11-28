@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- You can opt a model into reusing an idempotency key across chat retries when its endpoint supports it. This can prevent duplicate charges after a dropped connection ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
+- Select `google-decisions/gemini-decision-1` under **Decision model** in `/settings` or call it from codemode to ask structured questions about text and images using your existing Gemini API key. This new provider was tested against a simulated server, not the live Gemini API ([#6773](https://github.com/bastani-inc/atomic/issues/6773), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
+
 ### Changed
 
 - Atomic now asks the model to put the facts you need and what each choice would do in the question dialog, not just in earlier progress updates ([#6791](https://github.com/bastani-inc/atomic/issues/6791)).
@@ -10,13 +15,16 @@
 
 - Chat and subagents skip fallback models on the same account when a credential is rejected, quota runs out, or the rate-limit wait exceeds your retry limit, even if those models use different provider names. No settings change is needed ([#6779](https://github.com/bastani-inc/atomic/issues/6779)).
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
+- Atomic sends a fresh tracing ID for every OpenAI Chat Completions and Responses attempt, so separate requests can be traced even within the same session ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 
 - Chat moves to the next available fallback model when a provider asks it to wait past the retry limit. Retry and fallback attempts are saved in the session, and if no fallback can run, Atomic tells you how to recover instead of showing the provider's raw error ([#6774](https://github.com/bastani-inc/atomic/issues/6774)).
+- Chat no longer gets stuck loading when a provider never answers, sends only keepalive pings, or stalls while sending rate-limit details. Esc also stops waiting for unresponsive extensions or queued requests. Timeouts let Atomic retry or switch models according to your settings ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
 
 - Chat now compacts before switching models when Codex or OpenAI Responses reports a context limit, even if the error message does not say why. Temporary failures without an HTTP error status still get bounded retries, while exhausted quotas and rejected prompts go straight to the fallback chain.
+- Resume no longer waits for the blueprint ledger lock to expire when Atomic can tell its writer has stopped. If another Atomic process is still writing the ledger, resume tells you what it is waiting for ([#6804](https://github.com/bastani-inc/atomic/issues/6804)).
 - Chat treats temporary OpenAI capacity errors as retryable instead of content refusals. If OpenAI reports an API key, project, or organization spending cap, chat goes straight to the fallback chain.
 - Fixed a crash when quitting Atomic on macOS if optional stall diagnostics were collecting stack traces ([#6787](https://github.com/bastani-inc/atomic/issues/6787)).
-- Resume no longer waits for the blueprint ledger lock to expire when Atomic can tell its writer has stopped. If another Atomic process is still writing the ledger, resume tells you what it is waiting for ([#6804](https://github.com/bastani-inc/atomic/issues/6804)).
+- Classifier decisions in extensions now use your configured server retry delay cap instead of the default cap. No settings changes are needed ([#6773](https://github.com/bastani-inc/atomic/issues/6773)).
 
 ## [0.10.15] - 2026-11-27
 
