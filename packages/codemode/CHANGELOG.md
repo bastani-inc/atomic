@@ -4,6 +4,12 @@ This package is Atomic's fork of `@earendil-works/pi-codemode`. Its history up t
 
 ## [Unreleased]
 
+## [0.10.16] - 2026-11-27
+
+### Fixed
+
+- Script deadlines longer than about 25 days no longer fire immediately. `timeout_ms` accepts long values in the JavaScript safe integer range ([#6807](https://github.com/bastani-inc/atomic/issues/6807), [#6812](https://github.com/bastani-inc/atomic/pull/6812)).
+
 ## [0.10.16-alpha.1] - 2026-11-27
 
 ### Fixed
