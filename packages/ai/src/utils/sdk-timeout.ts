@@ -8,7 +8,7 @@ export function sdkTimerBackstop(timeoutMs: number | undefined): { timeout?: num
 	return timeoutMs === undefined ? {} : { timeout: Math.min(SDK_TIMER_MAX_MS, Math.ceil(timeoutMs)) };
 }
 
-/** Apply an explicit request deadline for one SDK attempt, not the retry sleep or the life of a returned stream. */
+/** Bound one non-streaming image request, including decoding the result. */
 export async function withSdkRequestTimeout<T>(
 	timeoutMs: number | undefined,
 	signal: AbortSignal | undefined,

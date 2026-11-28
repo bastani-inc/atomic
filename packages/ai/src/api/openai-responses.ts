@@ -30,7 +30,7 @@ import { skipOpenAIProviderRetry } from "../utils/responses-errors/codes.ts";
 import { getProviderRetryAfterMs } from "../utils/retry-hints.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
 import { withBoundedProviderHooks } from "../utils/provider-stream-hooks.ts";
-import { sdkTimerBackstop, withSdkRequestTimeout } from "../utils/sdk-timeout.js";
+import { sdkTimerBackstop } from "../utils/sdk-timeout.js";
 import { createStreamDeadline } from "../utils/stream-deadline.ts";
 import { recordThinkingOffFallback } from "../utils/thinking-off.ts";
 import { recordTlsCertificateRefusal } from "../utils/tls-certificate.ts";
@@ -262,12 +262,10 @@ export const stream: StreamFunction<"openai-responses", OpenAIResponsesOptions> 
 				params = nextParams as ResponseCreateParamsStreaming;
 			}
 			assertPayloadPreservesFastRoute(model, params);
-			const requestOptions = { ...sdkTimerBackstop(options?.timeoutMs), maxRetries: 0 };
+			const requestOptions = { ...sdkTimerBackstop(options?.timeoutMs), signal: streamDeadline.signal, maxRetries: 0 };
 			const createRequest = (requestParams: ResponseCreateParamsStreaming) => {
 				streamAttempt.begin();
-				return withSdkRequestTimeout(options?.timeoutMs, streamDeadline.signal, (signal) =>
-					client.responses.create(requestParams, { ...requestOptions, signal }).withResponse(),
-				);
+				return client.responses.create(requestParams, requestOptions).withResponse();
 			};
 			const sendRequest = (requestParams: ResponseCreateParamsStreaming) =>
 				retryProviderRequest(

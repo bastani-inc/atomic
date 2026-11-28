@@ -42,6 +42,25 @@ function stalledWire() {
 
 afterEach(() => vi.useRealTimers());
 
+test("a request timeout does not erase a 503 Retry-After while its error body stalls (#6807)", async () => {
+	vi.useFakeTimers();
+	const pulling = Promise.withResolvers<void>();
+	const body = new ReadableStream<Uint8Array>({ pull() { pulling.resolve(); return new Promise(() => {}); } });
+	const pending = completions(model("openai-completions", "openai", "gpt-4.1"), context, {
+		apiKey: "fixture",
+		timeoutMs: 25,
+		streamDeadlineMs: 0,
+		maxRetries: 0,
+		fetch: async () => new Response(body, { status: 503, headers: { "Retry-After": "0.5" } }),
+	}).result();
+	await pulling.promise;
+	await vi.advanceTimersByTimeAsync(250);
+	const result = await pending;
+	assert.equal(result.stopReason, "error");
+	assert.equal(result.retryAfterMs, 500);
+	assert.equal(isRetryableAssistantError(result), true);
+});
+
 test.each(cases)("%s does not abort after 1 ms from an overflowing timeout, and remains cancellable (#6807)", async (_name, run) => {
 	vi.useFakeTimers();
 	const wire = stalledWire();
