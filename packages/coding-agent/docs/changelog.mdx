@@ -10,7 +10,7 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
-<Update label="November 27, 2026" description="0.10.16-alpha.1">
+<Update label="November 27, 2026" description="0.10.16">
 
 Atomic resumes large sessions faster, recovers sooner from provider failures, and makes progress easier to follow.
 
@@ -26,7 +26,7 @@ Atomic resumes large sessions faster, recovers sooner from provider failures, an
 - **Better recovery from OpenAI and Codex errors.** Chat compacts before falling back on context limits, retries temporary failures within the configured limit, and honors short delays reported by Codex. Spending caps skip retries ([#6777](https://github.com/bastani-inc/atomic/pull/6777)).
 - **Safer OpenAI retries.** Compatible endpoints can opt in to a stable retry key to help avoid duplicate charges ([#6796](https://github.com/bastani-inc/atomic/pull/6796)).
 - **Clearer request tracing.** Each OpenAI, Z.ai, and Zhipu Coding CN request attempt gets its own tracing ID, including retries ([#6796](https://github.com/bastani-inc/atomic/pull/6796), [#6799](https://github.com/bastani-inc/atomic/pull/6799)).
-- **Google Decisions for structured questions.** Use an existing Gemini API key for yes/no, choice, and score questions about text and images. Local stub testing passed; live API verification is still open ([#6782](https://github.com/bastani-inc/atomic/pull/6782), [#6788](https://github.com/bastani-inc/atomic/issues/6788)).
+- **Google Decisions for structured questions.** Use an existing Gemini API key for yes/no, choice, and score questions about text and images. This integration was tested against a simulated server ([#6782](https://github.com/bastani-inc/atomic/pull/6782)).
 - **Claude progress stays readable.** Progress before tool calls appears as assistant text instead of being mixed into thinking summaries ([#6781](https://github.com/bastani-inc/atomic/pull/6781)).
 - **Questions stand on their own.** The question dialog now includes the facts and tradeoffs you need, even if you missed an earlier progress update ([#6793](https://github.com/bastani-inc/atomic/pull/6793)).
 - **Clean exit with stall diagnostics.** Atomic no longer crashes when quitting on macOS while optional stall diagnostics collect stack traces ([#6792](https://github.com/bastani-inc/atomic/pull/6792)).
