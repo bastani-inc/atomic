@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { type BigIntStats, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import {
 	HOLDER_TEMP_STALE_MS,
 	lockHolderPath,
+	newLockToken,
 	prepareTakeoverMutex,
 	processMayRun,
 	processMayRunAsync,
@@ -96,7 +96,7 @@ export function recordLockHolder(lockPath: string): void {
 		lockId: identity.exact,
 	};
 	const path = lockHolderPath(lockPath);
-	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	const temporary = `${path}.${process.pid}.${newLockToken()}.tmp`;
 	try {
 		writeFileSync(temporary, JSON.stringify(record));
 		renameReplacing(temporary, path);
@@ -119,7 +119,7 @@ export async function recordLockHolderAsync(lockPath: string): Promise<string | 
 		lockId: identity.exact,
 	};
 	const path = lockHolderPath(lockPath);
-	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+	const temporary = `${path}.${process.pid}.${newLockToken()}.tmp`;
 	try {
 		await writeFile(temporary, JSON.stringify(record));
 		await renameReplacingAsync(temporary, path);
@@ -210,7 +210,7 @@ export function takeOverDeadHolder(lockPath: string): boolean {
 			!matchesHolderRecord(readLockIdentity(lockPath), record)
 		)
 			return false;
-		const aside = `${lockPath}.${randomUUID()}.dead`;
+		const aside = `${lockPath}.${newLockToken()}.dead`;
 		// A process paused here for long keeps its mutex while it runs; one that lost it moves nothing.
 		if (!mutex.owned()) return false;
 		try {
@@ -248,7 +248,7 @@ export async function takeOverDeadHolderAsync(lockPath: string): Promise<boolean
 			!matchesHolderRecord(await readLockIdentityAsync(lockPath), record)
 		)
 			return false;
-		const aside = `${lockPath}.${randomUUID()}.dead`;
+		const aside = `${lockPath}.${newLockToken()}.dead`;
 		if (!(await mutex.owned())) return false;
 		try {
 			await rename(lockPath, aside);

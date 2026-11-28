@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs";
 import {
 	existsSync,
@@ -36,6 +36,11 @@ import {
  * mutex stale, and a pause or a crash can never admit two holders. Without the native lock, as with a native module
  * built before it, the mutex is a directory whose owner is judged as before, with a one-time warning.
  */
+
+/** Opaque lock bookkeeping must not consume UUIDs used by the work it protects (e.g. a restore record). */
+export function newLockToken(): string {
+	return randomBytes(16).toString("hex");
+}
 
 /** How old a directory takeover mutex that names no owner must be before it is judged left by a killed process. */
 export const TAKEOVER_MUTEX_STALE_MS = 10_000;
@@ -312,7 +317,7 @@ function removeStaleMutex(mutexPath: string, readStart: typeof processStartToken
 		const stats = statSync(mutexPath, { throwIfNoEntry: false });
 		if (stats !== undefined && Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return false;
 	}
-	const aside = `${mutexPath}.${randomUUID()}.dead`;
+	const aside = `${mutexPath}.${newLockToken()}.dead`;
 	try {
 		renameSync(mutexPath, aside);
 	} catch {
@@ -334,7 +339,7 @@ async function removeStaleMutexAsync(mutexPath: string): Promise<boolean> {
 		const stats = await statIfPresent(mutexPath);
 		if (stats !== undefined && Date.now() - stats.mtimeMs < TAKEOVER_MUTEX_STALE_MS) return false;
 	}
-	const aside = `${mutexPath}.${randomUUID()}.dead`;
+	const aside = `${mutexPath}.${newLockToken()}.dead`;
 	try {
 		await rename(mutexPath, aside);
 	} catch {
@@ -489,7 +494,7 @@ function takeDirectoryMutex(
 		host: hostname(),
 		pid: process.pid,
 		started: readStart(process.pid),
-		id: randomUUID(),
+		id: newLockToken(),
 	};
 	const owned = () => readMutexOwner(path)?.id === owner.id;
 	const mutex: TakeoverMutex = {
@@ -537,7 +542,7 @@ async function takeDirectoryMutexAsync(
 		host: hostname(),
 		pid: process.pid,
 		started: await ownStartToken(),
-		id: randomUUID(),
+		id: newLockToken(),
 	};
 	const owned = async () => (await readMutexOwnerAsync(path))?.id === owner.id;
 	const mutex: AsyncTakeoverMutex = {
@@ -573,7 +578,7 @@ async function takeDirectoryMutexAsync(
 
 /** A name beside the directory mutex at `path` for one being made or removed by a process holding the advisory lock. */
 function staging(path: string): string {
-	return `${path}.${randomUUID()}.tmp`;
+	return `${path}.${newLockToken()}.tmp`;
 }
 
 /**
