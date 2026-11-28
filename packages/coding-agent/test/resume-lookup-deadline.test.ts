@@ -6,7 +6,7 @@ import { withResumeLookupDeadline } from "../src/core/resume/not-found.ts";
 const target = { subject: "session" as const, id: "abc", storage: "postgres" };
 
 beforeEach(() => {
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
 });
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -63,7 +63,7 @@ test("the lookup stays pending until its deadline and fails typed and retryable 
 	);
 	assert.ok(isRetryableResumeError(error));
 	assert.match(error.message, /^Cannot look up the session abc: the storage \(postgres\) did not answer within 40 ms/);
-	assert.ok(clear.mock.calls.some(([handle]) => handle === timer));
+	assert.equal(vi.getTimerCount(), 2, "only the unrelated timers are still armed");
 	await vi.advanceTimersByTimeAsync(960);
 	assert.equal(unrelatedCalls, 2);
 	assert.equal(vi.getTimerCount(), 0);

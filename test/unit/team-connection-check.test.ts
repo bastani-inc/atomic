@@ -178,7 +178,7 @@ test("a database that never answers times out exactly at the deadline, and elaps
 		record.onQuery = resolve;
 	});
 	record.hang = true;
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
 	const url = URL_;
 	let settled = false;
 	const joining = join4320(url, undefined, 300).then(

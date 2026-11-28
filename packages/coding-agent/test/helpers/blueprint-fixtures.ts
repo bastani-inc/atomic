@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { vi } from "vitest";
 import { hostPlatform } from "../../src/core/resume/blueprint/schema.ts";
 import { BLUEPRINT_STEP_TIMEOUT_MS } from "../../src/core/resume/blueprint/steps.ts";
 import { getShellConfig } from "../../src/utils/shell.ts";
@@ -39,6 +40,9 @@ export function expireStepBudgetOnceStarted(started: () => boolean): {
 } {
 	const realSetTimeout = globalThis.setTimeout;
 	const realClearTimeout = globalThis.clearTimeout;
+	const realNow = performance.now.bind(performance);
+	let elapsed = 0;
+	const monotonicClock = vi.spyOn(performance, "now").mockImplementation(() => realNow() + elapsed);
 	const armedDelays: number[] = [];
 	const budgets: { readonly standIn: NodeJS.Timeout; cleared: boolean; watch?: NodeJS.Timeout }[] = [];
 	globalThis.setTimeout = ((handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
@@ -59,8 +63,10 @@ export function expireStepBudgetOnceStarted(started: () => boolean): {
 		budgets.push(budget);
 		const look = () => {
 			if (budget.cleared) return;
-			if (started()) handler(...args);
-			else budget.watch = realSetTimeout(look, 20);
+			if (started()) {
+				elapsed += timeout;
+				handler(...args);
+			} else budget.watch = realSetTimeout(look, 20);
 		};
 		budget.watch = realSetTimeout(look, 20);
 		return budget.standIn;
@@ -76,6 +82,7 @@ export function expireStepBudgetOnceStarted(started: () => boolean): {
 	return {
 		armedDelays,
 		restore() {
+			monotonicClock.mockRestore();
 			globalThis.setTimeout = realSetTimeout;
 			globalThis.clearTimeout = realClearTimeout;
 			for (const budget of budgets) {

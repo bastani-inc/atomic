@@ -1028,7 +1028,7 @@ describe("AgentSessionRuntime.switchSession across nodes (#4329)", () => {
 		const { sessionId } = await sessionRecordedElsewhere(sqliteSelection("shared"));
 		const { runtime } = await runtimeOn(fixture.sandbox.path("agent"), {});
 		const before = runtime.session.sessionId;
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 		try {
 			slowStore(runtime, "postgres", RESUME_CATALOG_TIMEOUT_MS * 2);
 			const pending = runtime.switchSession(sessionId).then(
@@ -1143,7 +1143,7 @@ export async function openSessionStore() {
 		const io = new CountingIo();
 		// The deadline's clock moves only once the probe waits on the storage, so a host slow to load the adapter
 		// cannot spend the 100 ms before the read starts.
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 		try {
 			const opening = openCliSession(parseArgs(["--session", "abc"]), fixture.sandbox.root, settings(), {
 				agentDir: fixture.sandbox.path("agent"),

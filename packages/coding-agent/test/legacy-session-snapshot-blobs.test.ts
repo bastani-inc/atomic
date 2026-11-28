@@ -100,7 +100,7 @@ test("the default session storage exposes its blob table, so sessions on it reco
 test("closing a session on the default storage collects the blobs its superseded snapshot released, once the collection's delay has passed (#4355, #5530)", async () => {
 	const { store, released, kept, stored } = await defaultStoreWithSupersededSnapshot();
 	const harness = await createHarness({ sessionManager: await SessionManager.create(store, root) });
-	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 
 	await harness.session.dispose();
 	await vi.advanceTimersByTimeAsync(SNAPSHOT_COLLECTION_SESSION_DELAY_MS);

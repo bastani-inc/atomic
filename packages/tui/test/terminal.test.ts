@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { closeSync, mkdtempSync, openSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, mock } from "node:test";
+import { describe, it } from "node:test";
 import { setKittyProtocolActive } from "../src/keys.ts";
 import {
 	normalizeAppleTerminalInput,
@@ -10,6 +10,7 @@ import {
 	ProcessTerminal,
 	resolveEscapeTimeoutMs,
 } from "../src/terminal.ts";
+import { mockMonotonicTimers } from "./mock-monotonic-timers.ts";
 
 describe("resolveEscapeTimeoutMs", () => {
 	it("uses PI_TUI_ESC_TIMEOUT when configured", () => {
@@ -229,12 +230,12 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 		}
 	});
 
-	it("tracks split Kitty confirmation", () => {
-		mock.timers.enable({ apis: ["setTimeout"] });
+	it("tracks split Kitty confirmation", (t) => {
+		mockMonotonicTimers(t);
 		const harness = setupNegotiation();
 		try {
 			harness.send("\x1b[?7");
-			mock.timers.tick(10);
+			t.mock.timers.tick(10);
 
 			assert.equal(harness.getInput(), undefined);
 
@@ -244,7 +245,6 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 			assert.equal(harness.writes.includes("\x1b[>4;2m"), false);
 		} finally {
 			harness.cleanup();
-			mock.timers.reset();
 		}
 	});
 
@@ -410,21 +410,20 @@ describe("ProcessTerminal Kitty keyboard protocol negotiation", () => {
 		});
 	});
 
-	it("replays buffered CSI-prefix input when it is not a Kitty response", () => {
-		mock.timers.enable({ apis: ["setTimeout"] });
+	it("replays buffered CSI-prefix input when it is not a Kitty response", (t) => {
+		mockMonotonicTimers(t);
 		const harness = setupNegotiation();
 		try {
 			harness.send("\x1b[");
-			mock.timers.tick(50); // StdinBuffer sequence timeout, not the lone-ESC timeout
+			t.mock.timers.tick(50); // StdinBuffer sequence timeout, not the lone-ESC timeout
 
 			assert.equal(harness.getInput(), undefined);
 
-			mock.timers.tick(150);
+			t.mock.timers.tick(150);
 
 			assert.equal(harness.getInput(), "\x1b[");
 		} finally {
 			harness.cleanup();
-			mock.timers.reset();
 		}
 	});
 });

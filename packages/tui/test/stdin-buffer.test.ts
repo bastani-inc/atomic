@@ -9,6 +9,7 @@ import assert from "node:assert";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { matchesKey } from "../src/keys.ts";
 import { StdinBuffer } from "../src/stdin-buffer.ts";
+import { mockMonotonicTimers } from "./mock-monotonic-timers.ts";
 
 describe("StdinBuffer", () => {
 	let buffer: StdinBuffer;
@@ -230,7 +231,7 @@ describe("StdinBuffer", () => {
 
 		for (const { header, reply } of replies) {
 			it(`keeps delayed ${JSON.stringify(reply)} intact at every split after its reply header`, (t) => {
-				t.mock.timers.enable({ apis: ["setTimeout"] });
+				mockMonotonicTimers(t);
 				for (let split = header.length; split < reply.length; split++) {
 					const delayedBuffer = new StdinBuffer();
 					const sequences: string[] = [];
@@ -252,7 +253,7 @@ describe("StdinBuffer", () => {
 		}
 
 		it("keeps an OSC reply buffered across multiple expired sequence timeouts", (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			processInput("\x1b]4;1;rgb:eaea/6c");
 			t.mock.timers.tick(100);
 			assert.deepStrictEqual(emittedSequences, []);
@@ -264,7 +265,7 @@ describe("StdinBuffer", () => {
 		});
 
 		it("still times out bare string introducers as Alt keys", (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			for (const prefix of ["\x1b]", "\x1bP", "\x1b_"]) {
 				processInput(prefix);
 				t.mock.timers.tick(10);
@@ -286,7 +287,7 @@ describe("StdinBuffer", () => {
 			"\x1b_Gi=1",
 		]) {
 			it(`recovers batched legacy Alt input ${JSON.stringify(ambiguous)} within the sequence timeout`, (t) => {
-				t.mock.timers.enable({ apis: ["setTimeout"] });
+				mockMonotonicTimers(t);
 				const legacyBuffer = new StdinBuffer();
 				const sequences: string[] = [];
 				legacyBuffer.on("data", (sequence) => sequences.push(sequence));
@@ -316,7 +317,7 @@ describe("StdinBuffer", () => {
 		}
 
 		it("recognizes a reply header assembled within the ambiguous-input timeout", (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			processInput("\x1b]1");
 			t.mock.timers.tick(5);
 			processInput("0;");
@@ -327,7 +328,7 @@ describe("StdinBuffer", () => {
 		});
 
 		it("recovers from an unterminated reply when a new escape sequence arrives", (t) => {
-			t.mock.timers.enable({ apis: ["setTimeout"] });
+			mockMonotonicTimers(t);
 			processInput("\x1b]4;1;rgb:eaea/6c");
 			t.mock.timers.tick(100);
 			processInput("\x1b");

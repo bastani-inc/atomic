@@ -167,7 +167,7 @@ test.skipIf(process.platform === "win32")(
 		containment.enabled = true;
 		// The fake job ends nothing here, so the hook still runs when its timeout comes.
 		containment.endsOnTerminate = false;
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 		try {
 			const creating = createWorktrees(repo, "hook/overflow", 1, {
 				setupHook: { hookPath: hook, timeoutMs: 30_000 },

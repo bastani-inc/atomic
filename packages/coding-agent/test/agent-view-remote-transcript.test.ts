@@ -686,7 +686,7 @@ describe("the isolated engine's subagent in the host's transcript area", () => {
 	test("a panel that never opens again holds the subagent back for its bound at most (#6123)", async () => {
 		const view = await tasksOpen();
 		try {
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
 			view.engine.switcher.requestView(view.sub.taskId, { keepScreen: true, panel: true });
 			view.closeTasks();
 			for (let turn = 0; turn < 20 && !view.engine.transcriptFramed(); turn++) await flush();
