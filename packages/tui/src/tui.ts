@@ -3,6 +3,7 @@
  */
 
 import { performance } from "node:perf_hooks";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { type HintAction, hintKeyInput, runAsHintActivation, stripHintMarkers } from "./clickable-hints.ts";
 import { isKeyRelease, matchesKey } from "./keys.ts";
 import type { Terminal } from "./terminal.ts";
@@ -194,7 +195,7 @@ type PendingTerminalColorQuery = {
 	 * query completed (on the DA1 reply or once every color replied); later replies are ignored.
 	 */
 	deliver: ((colors: TerminalColors) => void) | undefined;
-	timer: NodeJS.Timeout | undefined;
+	timer: LongTimeout | undefined;
 };
 
 const TERMINAL_PALETTE_SIZE = 16;
@@ -1431,7 +1432,7 @@ export abstract class TuiBase extends Container implements TUI {
 	private completeTerminalColorQuery(query: PendingTerminalColorQuery): void {
 		const deliver = query.deliver;
 		query.deliver = undefined;
-		clearTimeout(query.timer);
+		query.timer?.clear();
 		deliver?.(this.terminalColorQueryResult(query));
 	}
 
@@ -1783,7 +1784,7 @@ export abstract class TuiBase extends Container implements TUI {
 				timer: undefined,
 			};
 			// Resolve with the replies so far, and keep collecting late replies for `onLateReply`.
-			query.timer = setTimeout(() => {
+			query.timer = setLongTimeout(() => {
 				query.deliver = onLateReply;
 				resolve(this.terminalColorQueryResult(query));
 			}, timeoutMs);

@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { CallToolResult } from "./protocol/content.js";
 import {
 	isJsonRpcId,
@@ -61,7 +62,7 @@ interface PendingRequest {
 	resolve: (value: unknown) => void;
 	reject: (reason: unknown) => void;
 	timeoutMs: number;
-	timer: ReturnType<typeof setTimeout> | undefined;
+	timer: LongTimeout | undefined;
 	signal: AbortSignal | undefined;
 	onAbort: () => void;
 	sendController: AbortController;
@@ -547,9 +548,9 @@ export class McpClient {
 	}
 
 	private armTimeout(id: JsonRpcId, entry: PendingRequest): void {
-		if (entry.timer) clearTimeout(entry.timer);
+		entry.timer?.clear();
 		if (!Number.isFinite(entry.timeoutMs) || entry.timeoutMs <= 0) return;
-		entry.timer = setTimeout(() => {
+		entry.timer = setLongTimeout(() => {
 			this.cancelPending(id, new McpTimeoutError(entry.timeoutMs), entry.cancellable, "Request timed out");
 		}, entry.timeoutMs);
 	}
@@ -572,7 +573,7 @@ export class McpClient {
 
 	private removePending(id: JsonRpcId, entry: PendingRequest): void {
 		this.pending.delete(id);
-		if (entry.timer) clearTimeout(entry.timer);
+		entry.timer?.clear();
 		if (entry.progressToken !== undefined) this.progressRequests.delete(entry.progressToken);
 		entry.signal?.removeEventListener("abort", entry.onAbort);
 		entry.sendController.abort();

@@ -106,7 +106,7 @@ text(JSON.parse(source).name);
 Supported header fields (snake_case):
 
 - `max_output_tokens`: non-negative safe integer (`>= 0`), returned as `options.maxOutputTokens`.
-- `timeout_ms`: positive safe integer (`1` to `2,147,483,647`), returned as `options.timeoutMs`.
+- `timeout_ms`: positive safe integer, returned as `options.timeoutMs`.
 
 `parseCodemodeSource()` returns `{ code, options: { maxOutputTokens?, timeoutMs? } }` and replaces line 1 with a blank line so stack-trace line numbers match the input. Empty input, invalid JSON, unknown fields, header-only input, or a header after line 1 throws `CodemodeSourceError`. `CODEMODE_SOURCE_GRAMMAR` exports a Lark grammar for grammar-constrained tool calling (both also exported from `@bastani/atomic-codemode/source`). The sandbox does not enforce these parsed options automatically; your caller applies them.
 

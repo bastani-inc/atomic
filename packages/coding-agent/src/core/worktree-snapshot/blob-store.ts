@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { storageSchemaCurrent, transactionFinisher } from "../storage/added-exports.js";
 import { MAX_SEQUENCE_REQUEST_STATEMENTS, noteStorageSchemaTables } from "../storage/added-exports-0-10-11.js";
 import type {
@@ -231,7 +232,7 @@ const databaseIdentity = (descriptor: StorageDescriptor) => `${descriptor.adapte
 export class BackgroundCollectionPace {
 	readonly signal?: AbortSignal;
 	private keepAlive = false;
-	private pending?: ReturnType<typeof setTimeout>;
+	private pending?: LongTimeout;
 
 	constructor(signal?: AbortSignal) {
 		this.signal = signal;
@@ -246,14 +247,13 @@ export class BackgroundCollectionPace {
 			const signal = this.signal;
 			if (signal?.aborted) return resolve();
 			const done = () => {
-				clearTimeout(timer);
+				timer.clear();
 				signal?.removeEventListener("abort", done);
 				this.pending = undefined;
 				resolve();
 			};
-			const timer = setTimeout(done, milliseconds);
+			const timer = setLongTimeout(done, milliseconds, { ref: this.keepAlive });
 			signal?.addEventListener("abort", done, { once: true });
-			if (!this.keepAlive) timer.unref();
 			this.pending = timer;
 		});
 	}

@@ -1,3 +1,4 @@
+import { sleepFor } from "@bastani/atomic-timers";
 import { createProvider, type Provider } from "../models.ts";
 import type {
 	AssistantMessage,
@@ -354,7 +355,7 @@ function scheduleChunk(chunk: string, tokensPerSecond: number | undefined): Prom
 		return new Promise((resolve) => queueMicrotask(resolve));
 	}
 	const delayMs = (estimateTokens(chunk) / tokensPerSecond) * 1000;
-	return new Promise((resolve) => setTimeout(resolve, delayMs));
+	return sleepFor(delayMs);
 }
 
 async function streamWithDeltas(

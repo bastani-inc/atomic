@@ -1,6 +1,7 @@
 import { stat as fsStat } from "node:fs/promises";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { Text } from "@bastani/atomic-tui";
 import path from "path";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
@@ -395,7 +396,8 @@ export function createGrepToolDefinition(
 							env: createChildProcessEnvironment(),
 							stdio: ["ignore", "pipe", "pipe"],
 						});
-						const timeoutTimer = timeoutMs !== undefined ? setTimeout(() => stopChild(), timeoutMs) : undefined;
+						const timeoutTimer =
+							timeoutMs !== undefined ? setLongTimeout(() => stopChild(), timeoutMs) : undefined;
 						let detachLines = () => {};
 						let stderr = "";
 						let matchCount = 0;
@@ -406,7 +408,7 @@ export function createGrepToolDefinition(
 						const outputLines: string[] = [];
 
 						const cleanup = () => {
-							if (timeoutTimer) clearTimeout(timeoutTimer);
+							timeoutTimer?.clear();
 							detachLines();
 							signal?.removeEventListener("abort", onAbort);
 						};

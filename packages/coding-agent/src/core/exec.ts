@@ -7,6 +7,7 @@ import { stat } from "node:fs/promises";
 import { constants as osConstants } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import {
 	createChildProcessEnvironment,
 	isChildProcessExitStatusUnknownError,
@@ -199,10 +200,10 @@ function stopLookupOn(
 	const stop = () => lookup.abort();
 	options?.signal?.addEventListener("abort", stop, { once: true });
 	if (options?.signal?.aborted) stop();
-	const timer = options?.timeout && options.timeout > 0 ? setTimeout(stop, options.timeout) : undefined;
+	const timer = options?.timeout && options.timeout > 0 ? setLongTimeout(stop, options.timeout) : undefined;
 	const stopOnQuit = onQuit?.(stop);
 	return () => {
-		clearTimeout(timer);
+		timer?.clear();
 		options?.signal?.removeEventListener("abort", stop);
 		stopOnQuit?.();
 	};
@@ -291,7 +292,7 @@ export async function execCommand(
 	let outputBytes = 0;
 	let truncated = false;
 	let killed = false;
-	let timeoutId: NodeJS.Timeout | undefined;
+	let timeoutId: LongTimeout | undefined;
 	let forceKillId: NodeJS.Timeout | undefined;
 	let quitCutId: NodeJS.Timeout | undefined;
 	const exited = () => proc.exitCode !== null || proc.signalCode !== null;
@@ -382,7 +383,7 @@ export async function execCommand(
 	}
 
 	if (options?.timeout && options.timeout > 0) {
-		timeoutId = setTimeout(abort, Math.max(0, options.timeout - lookupMs));
+		timeoutId = setLongTimeout(abort, options.timeout - lookupMs);
 	}
 
 	// Keep only bytes within the combined cap (#11360). Close both pipes on overflow so writing
@@ -427,7 +428,7 @@ export async function execCommand(
 		}
 	} finally {
 		hostDeathWatch?.release();
-		clearTimeout(timeoutId);
+		timeoutId?.clear();
 		options?.signal?.removeEventListener("abort", abort);
 		stopOnQuit?.();
 		quitStoppableCommands.delete(proc);

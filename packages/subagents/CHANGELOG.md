@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Long waits for subagent replies or worktree commands no longer expire immediately when they exceed about 25 days ([#6807](https://github.com/bastani-inc/atomic/issues/6807)).
+
 ## [0.10.11] - 2026-11-27
 
 ### Changed

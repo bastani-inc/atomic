@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { Component, TUI } from "@bastani/atomic-tui";
 import { taskPromptHost } from "../../core/extensions/held-prompts.ts";
 import type {
@@ -64,10 +65,10 @@ function createDialogPromise<T>({
 
 	const id = crypto.randomUUID();
 	return new Promise((resolve, reject) => {
-		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		let timeoutId: LongTimeout | undefined;
 
 		const cleanup = () => {
-			if (timeoutId) clearTimeout(timeoutId);
+			timeoutId?.clear();
 			dialogOptions?.signal?.removeEventListener("abort", onAbort);
 			pendingExtensionRequests.delete(id);
 		};
@@ -83,7 +84,7 @@ function createDialogPromise<T>({
 		dialogOptions?.signal?.addEventListener("abort", onAbort, { once: true });
 
 		if (dialogOptions?.timeout) {
-			timeoutId = setTimeout(cancel, dialogOptions.timeout);
+			timeoutId = setLongTimeout(cancel, dialogOptions.timeout);
 		}
 
 		pendingExtensionRequests.set(id, {

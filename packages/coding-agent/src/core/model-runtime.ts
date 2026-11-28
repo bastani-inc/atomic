@@ -107,6 +107,7 @@ import { sessionLifecycleCreation } from "./session-lifecycle-scope.ts";
 
 export type { CreateModelRuntimeOptions, ModelRuntimeAuthOverrides } from "./model-runtime-types.ts";
 
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { mergeConfiguredAuthHeaders } from "./model-runtime-auth.ts";
 import { configureBuiltinProviders } from "./model-runtime-providers.ts";
 import { canRestoreUnknownModel as canRestoreUnknownModelProvider } from "./model-runtime-restoration.ts";
@@ -276,14 +277,14 @@ export class ModelRuntime implements Models {
 		const refreshFromNetwork = allowModelNetwork === true;
 		const controller = refreshFromNetwork ? new AbortController() : undefined;
 		const timeout = controller
-			? setTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
+			? setLongTimeout(() => controller.abort(), options.modelRefreshTimeoutMs ?? 15_000)
 			: undefined;
 		try {
 			if (options.refreshOnCreate !== false) {
 				await runtime.refresh({ allowNetwork: refreshFromNetwork, signal: controller?.signal });
 			}
 		} finally {
-			if (timeout) clearTimeout(timeout);
+			timeout?.clear();
 		}
 		return runtime;
 	}

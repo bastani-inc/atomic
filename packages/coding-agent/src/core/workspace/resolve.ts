@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { sleepFor } from "@bastani/atomic-timers";
 import { getAgentDir } from "../../config.js";
 import { renameReplacingAsync } from "../rename-retry.ts";
 import { storageHomeDir } from "../storage/file-identity.js";
@@ -712,7 +713,7 @@ async function addWorktree(
 		if (busy === undefined) return;
 		// An unnamed adder cannot be watched, so the bind fails at once rather than waiting on a lock that may be stale.
 		if (busy.adder === null || probe >= additionWait.probes) throw additionInProgress(busy);
-		await new Promise((resolveWait) => setTimeout(resolveWait, additionWait.intervalMs));
+		await sleepFor(additionWait.intervalMs);
 	}
 }
 

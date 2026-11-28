@@ -1,5 +1,6 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import {
 	processLaunch,
 	processLaunchAsync,
@@ -49,7 +50,7 @@ export async function runCommandCapture(
 		let timedOut = false;
 		const timeout =
 			typeof options?.timeoutMs === "number"
-				? setTimeout(() => {
+				? setLongTimeout(() => {
 						timedOut = true;
 						child.kill();
 					}, options.timeoutMs)
@@ -62,11 +63,11 @@ export async function runCommandCapture(
 			stderr += data.toString();
 		});
 		child.once("error", (error) => {
-			if (timeout) clearTimeout(timeout);
+			timeout?.clear();
 			reject(error);
 		});
 		child.once("close", (code, signal) => {
-			if (timeout) clearTimeout(timeout);
+			timeout?.clear();
 			if (timedOut) {
 				reject(new Error(`${command} ${args.join(" ")} timed out after ${options?.timeoutMs}ms`));
 				return;

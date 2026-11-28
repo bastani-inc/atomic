@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { ExtensionWidgetOptions } from "./types.ts";
 import type { WidgetScrollRequest, WidgetScrollState } from "./ui-types.js";
 
@@ -79,8 +80,8 @@ export interface InstallReactiveWidgetOptions<TSnapshot, TTheme> {
 }
 
 const defaultTimerApi: ReactiveWidgetTimerApi = {
-	setTimeout: (handler, delayMs) => setTimeout(handler, delayMs) as ReactiveWidgetTimerHandle,
-	clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	setTimeout: setLongTimeout,
+	clearTimeout: (handle) => (handle as LongTimeout).clear(),
 };
 
 const defaultScheduler: ReactiveWidgetScheduler = {

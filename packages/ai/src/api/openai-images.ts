@@ -36,6 +36,7 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { ProviderRetryTransport, retryProviderRequest } from "../utils/provider-retry.ts";
 import { RetryDeadlineError } from "../utils/retry-sleep.ts";
+import { sdkTimerBackstop, withSdkRequestTimeout } from "../utils/sdk-timeout.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import {
 	DEFAULT_SVG_AUTHOR_MODEL,
@@ -107,18 +108,16 @@ export const generateImages: ImagesFunction<OpenAIImagesOptions> = async (
 		const nextParams = await options?.onPayload?.(params, model);
 		if (nextParams !== undefined) params = nextParams as OpenAIImagesWireParams;
 		validateOpenAIImagesRequest(model, params);
-		const requestOptions = {
-			...(options?.signal ? { signal: options.signal } : {}),
-			timeout: state.timeoutMs,
-			maxRetries: 0,
-		};
+		const requestOptions = { ...sdkTimerBackstop(state.timeoutMs), maxRetries: 0 };
 		const send = async (body: OpenAIImagesWireParams, svgModelDefaulted: boolean): Promise<SentRequest> => {
 			state.svgModelDefaulted = svgModelDefaulted;
 			const { data, response } = await retryProviderRequest(
-				() =>
-					body.image !== undefined
-						? client.images.edit(body as ImageEditParamsNonStreaming, requestOptions).withResponse()
-						: client.images.generate(body as ImageGenerateParamsNonStreaming, requestOptions).withResponse(),
+				() => withSdkRequestTimeout(state.timeoutMs, options.signal, (signal) => {
+					const request = { ...requestOptions, signal };
+					return body.image !== undefined
+						? client.images.edit(body as ImageEditParamsNonStreaming, request).withResponse()
+						: client.images.generate(body as ImageGenerateParamsNonStreaming, request).withResponse();
+				}),
 				{
 					maxRetries: options.maxRetries,
 					maxRetryDelayMs: options.maxRetryDelayMs,

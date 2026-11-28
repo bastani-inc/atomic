@@ -66,6 +66,27 @@ describe("settings type validation (#4902)", () => {
 		}
 	}
 
+	test("loaded settings report each invalid retry duration and preserve zero and long values (#6807)", () => {
+		writeFileSync(
+			globalPath,
+			'{"retry":{"baseDelayMs":-1,"maxAgentDelayMs":0,"provider":{"timeoutMs":1e309,"maxRetryDelayMs":3000000000}}}',
+		);
+		writeJson(projectPath, { retry: { provider: { maxRetryDelayMs: "soon" } } });
+
+		const manager = SettingsManager.create(projectDir, agentDir);
+
+		assert.equal(manager.getRetrySettings().baseDelayMs, 2000);
+		assert.equal(manager.getRetrySettings().maxAgentDelayMs, 0);
+		assert.equal(manager.getProviderRetrySettings().maxRetryDelayMs, 3_000_000_000);
+		assert.equal(manager.getProviderRetrySettings().timeoutMs, undefined);
+		const errors = manager.drainErrors();
+		assert.deepEqual(
+			new Set(errors.map(({ invalidKey }) => invalidKey)),
+			new Set(["retry.baseDelayMs", "retry.provider.timeoutMs", "retry.provider.maxRetryDelayMs"]),
+		);
+		for (const { error } of errors) assert.match(error.message, /finite non-negative number/);
+	});
+
 	test("a wrong-typed project value falls back to the global value (#4902)", () => {
 		writeJson(globalPath, { extensions: ["./global.ts"] });
 		writeJson(projectPath, { extensions: "./project.ts" });
@@ -150,7 +171,10 @@ describe("settings type validation (#4902)", () => {
 
 		const manager = SettingsManager.create(projectDir, agentDir);
 
-		assert.deepEqual(manager.drainErrors(), []);
+		assert.deepEqual(
+			manager.drainErrors().map(({ invalidKey }) => invalidKey),
+			["httpIdleTimeoutMs", "websocketConnectTimeoutMs", "streamDeadlineMs"],
+		);
 		assert.throws(() => manager.getHttpIdleTimeoutMs(), /Invalid httpIdleTimeoutMs setting/);
 		assert.equal(manager.getGlobalSettings().streamDeadlineMs, true);
 	});
@@ -220,12 +244,14 @@ describe("settings type validation (#4902)", () => {
 		);
 	});
 
-	test("a right-typed value outside its allowed values is left for its accessor (#4902)", () => {
+	test("an invalid transport duration is reported on load and still fails closed (#6807)", () => {
 		writeJson(globalPath, { httpIdleTimeoutMs: "soon" });
 
 		const manager = SettingsManager.create(projectDir, agentDir);
 
-		assert.deepEqual(manager.drainErrors(), []);
+		const [error] = manager.drainErrors();
+		assert.equal(error?.invalidKey, "httpIdleTimeoutMs");
+		assert.match(error?.error.message ?? "", /finite non-negative number/);
 		assert.throws(() => manager.getHttpIdleTimeoutMs(), /Invalid httpIdleTimeoutMs setting/);
 	});
 

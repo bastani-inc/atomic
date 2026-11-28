@@ -1,4 +1,5 @@
 import type { TSchema } from "@bastani/atomic-ai/utils/typebox/index";
+import { parseHttpIdleTimeoutMs } from "./settings-duration.js";
 import { SettingsSchema } from "./settings-schema.ts";
 
 /** A setting, or one of its list entries, removed from a loaded file because the schema does not accept its JSON type. */
@@ -9,8 +10,10 @@ export interface InvalidSettingValue {
 	key: string;
 	/** The JSON types the schema accepts there, such as `array of string`. */
 	expected: string;
-	/** The JSON type that was found, such as `string`. */
+	/** The JSON type or out-of-range number that was found. */
 	actual: string;
+	/** Retained so a request cannot silently fall back instead of rejecting it. */
+	failClosed?: boolean;
 }
 
 interface SchemaNode {
@@ -133,18 +136,68 @@ function collect(
 	}
 }
 
+const DURATION_PATHS = [
+	["retry", "baseDelayMs"],
+	["retry", "maxAgentDelayMs"],
+	["retry", "maxDelayMs"],
+	["retry", "provider", "timeoutMs"],
+	["retry", "provider", "maxRetryDelayMs"],
+	["tasks", "heartbeatMs"],
+	["snapshots", "collectIntervalSeconds"],
+	["snapshots", "graceSeconds"],
+] as const;
+
+function collectInvalidDurations(settings: Record<string, JsonValue>, invalid: InvalidSettingValue[]): void {
+	for (const [setting, ...fields] of DURATION_PATHS) {
+		let parent: JsonValue | undefined = settings[setting];
+		for (const field of fields.slice(0, -1)) {
+			parent = parent !== null && typeof parent === "object" && !Array.isArray(parent) ? parent[field] : undefined;
+		}
+		if (parent === null || typeof parent !== "object" || Array.isArray(parent)) continue;
+		const field = fields.at(-1)!;
+		const value = parent[field];
+		if (value === undefined || (typeof value === "number" && Number.isFinite(value) && value >= 0)) continue;
+		const key = [setting, ...fields].join(".");
+		invalid.push({
+			setting,
+			key,
+			expected: "a finite non-negative number",
+			actual: typeof value === "number" ? String(value) : jsonTypeOf(value),
+		});
+		delete parent[field];
+	}
+	// These transport options already reject bad values rather than silently using a different deadline.
+	for (const setting of ["httpIdleTimeoutMs", "websocketConnectTimeoutMs", "streamDeadlineMs"]) {
+		const value = settings[setting];
+		if (value === undefined || parseHttpIdleTimeoutMs(value) !== undefined) continue;
+		invalid.push({
+			setting,
+			key: setting,
+			expected: 'a finite non-negative number, a duration such as "30s", or "disabled"',
+			actual:
+				typeof value === "number"
+					? String(value)
+					: typeof value === "string"
+						? JSON.stringify(value)
+						: jsonTypeOf(value),
+			failClosed: true,
+		});
+	}
+}
+
 /**
  * Remove every top-level setting, and every list entry, whose JSON type the settings schema does not accept. A removed
  * setting reads as unset, so the next settings layer or the default applies. Values of the right type that break a
- * narrower rule (a range, a pattern, an allowed word, a field inside an object) are kept for the accessor that owns
- * that rule. Mutates `settings` and returns what was removed.
+ * narrower rule (a range, a pattern, an allowed word, a field inside an object) are generally kept for the accessor
+ * that owns that rule. Duration limits are checked here too, before any timer can use them.
  */
 export function dropWrongTypedSettings(settings: Record<string, JsonValue>): InvalidSettingValue[] {
 	const invalid: InvalidSettingValue[] = [];
 	collect((SettingsSchema as TSchema & SchemaNode).properties!, settings, invalid);
+	collectInvalidDurations(settings, invalid);
 	return invalid;
 }
 
-export function invalidSettingMessage({ key, expected, actual }: InvalidSettingValue): string {
-	return `"${key}" must be ${expected}, not ${actual}; ignoring it.`;
+export function invalidSettingMessage({ key, expected, actual, failClosed }: InvalidSettingValue): string {
+	return `"${key}" must be ${expected}, not ${actual}; ${failClosed ? "requests that use it will fail" : "ignoring it"}.`;
 }

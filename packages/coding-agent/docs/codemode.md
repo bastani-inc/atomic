@@ -43,7 +43,7 @@ return { name: JSON.parse(pkg).name, excerpt: readme.slice(0, 400) };
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `max_output_tokens` | `10000` | Non-negative safe integer (`0` is accepted; character budget is `max_output_tokens * 4`). Text overflow keeps the start and end and writes full text to a temp file named in the result. Emitted images survive text truncation and keep their `[Image saved to ...]` paths intact. |
-| `timeout_ms` | Unset | Hard deadline in milliseconds for the whole script, including waiting for a worker slot. Must be a positive integer up to `2147483647` (about 24.8 days); `0`, negative numbers, decimals, or larger values fail before running. Avoid short deadlines when generating images, which can take minutes. |
+| `timeout_ms` | Unset | Hard deadline in milliseconds for the whole script, including waiting for a worker slot. Must be a positive whole number in JavaScript's safe range. `0`, negative numbers, decimals, or values outside that range fail before running. Avoid short deadlines when generating images, which can take minutes. |
 
 **Result format.** Every run starts with `Script completed` or `Script failed` plus wall time, followed by text and image items in order. Multiple text items (from `text()` or `return`) are separated by `==> text N/M <==`, and `console.*` output follows in one `<console_output>` block. On failure, partial output is kept before `Script error:`. Side effects from completed tool calls are **not** rolled back; still-running tool calls are cancelled and unawaited promises are dropped when the script exits.
 

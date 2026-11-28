@@ -2,6 +2,7 @@ import { stat as fsStat } from "node:fs/promises";
 import path, { type PlatformPath } from "node:path";
 import type { AgentTool } from "@bastani/atomic-agent-core";
 import { type Static, Type } from "@bastani/atomic-ai/utils/typebox/index";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { Text } from "@bastani/atomic-tui";
 import { Minimatch } from "minimatch";
 import { parenthesizedKeyHint } from "../../modes/interactive/components/keybinding-hints.js";
@@ -574,7 +575,7 @@ export function createFindToolDefinition(
 									break;
 								}
 								const timeoutResult = Symbol("find-timeout");
-								let raceTimer: ReturnType<typeof setTimeout> | undefined;
+								let raceTimer: LongTimeout | undefined;
 								const ignore = findTargetMentionsNodeModules(target)
 									? ["**/.git/**"]
 									: ["**/node_modules/**", "**/.git/**"];
@@ -587,10 +588,10 @@ export function createFindToolDefinition(
 										}),
 									),
 									new Promise<typeof timeoutResult>((resolveTimeout) => {
-										raceTimer = setTimeout(() => resolveTimeout(timeoutResult), remainingMs);
+										raceTimer = setLongTimeout(() => resolveTimeout(timeoutResult), remainingMs);
 									}),
 								]);
-								if (raceTimer) clearTimeout(raceTimer);
+								raceTimer?.clear();
 								if (!Array.isArray(results)) {
 									timedOut = true;
 									break;
@@ -768,12 +769,12 @@ export function createFindToolDefinition(
 								stopChild = () => {
 									if (!child.killed) child.kill();
 								};
-								const targetTimer = setTimeout(() => {
+								const targetTimer = setLongTimeout(() => {
 									timedOut = true;
 									stopChild?.();
 								}, remainingMs);
 								const cleanup = () => {
-									clearTimeout(targetTimer);
+									targetTimer.clear();
 									detachLines();
 								};
 								child.stderr?.on("data", (chunk) => {

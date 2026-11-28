@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { asyncScope } from "../async-scope.ts";
 
 /**
@@ -54,9 +55,9 @@ export function trackTranspileCacheWrite<T>(write: Promise<T>): Promise<T> {
 export async function transpileCacheWritesSettled(owner: object, limitMs: number): Promise<number> {
 	const writes = owned.get(owner);
 	if (!writes?.size) return 0;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	const expired = new Promise<"expired">((resolve) => {
-		timer = setTimeout(() => resolve("expired"), limitMs);
+		timer = setLongTimeout(() => resolve("expired"), limitMs);
 	});
 	try {
 		while (writes.size > 0) {
@@ -65,6 +66,6 @@ export async function transpileCacheWritesSettled(owner: object, limitMs: number
 		}
 		return writes.size;
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 }

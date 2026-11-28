@@ -1,7 +1,3 @@
-import { type Terminal, TuiMainScreen, type TuiStopOptions } from "@bastani/atomic-tui";
-import { getAgentDir } from "../../config.js";
-import { yieldToEventLoop } from "../../utils/event-loop.ts";
-
 /**
  * Engine-side queue for render work no keystroke waits on: widget repaints and transcript rows (tool cards and
  * custom messages) whose state streamed in.
@@ -16,14 +12,16 @@ import { yieldToEventLoop } from "../../utils/event-loop.ts";
  * Jobs run one per event-loop turn. Terminal input that arrives behind a burst of background renders therefore
  * waits for at most one of them, however many are queued.
  */
+import { sleepFor } from "@bastani/atomic-timers";
+import { type Terminal, TuiMainScreen, type TuiStopOptions } from "@bastani/atomic-tui";
+import { getAgentDir } from "../../config.js";
+import { yieldToEventLoop } from "../../utils/event-loop.ts";
+
 const SLOW_RENDER_THRESHOLD_MS = 16;
 const MAX_SLOW_RENDER_COOLDOWN_MS = 100;
 
 function waitTimerCooldown(ms: number): Promise<void> {
-	return new Promise<void>((resolve) => {
-		const timer = setTimeout(resolve, ms);
-		timer.unref?.();
-	});
+	return sleepFor(ms, { ref: false });
 }
 
 export interface BackgroundRenderLaneOptions {

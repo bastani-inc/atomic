@@ -68,6 +68,15 @@ test("the line names the reason, the attempt and the countdown, in sentence case
 	assert.equal(retryWaitText(summary, 2), "Retrying summary · server error 503 · attempt 1/3 in 2s");
 });
 
+test("a multi-day retry shows its remaining days and the cancel hint (#6807)", () => {
+	const now = 1_000_000;
+	const wait = retryWaitFromEvent({ delayMs: 3_000_000_000, errorMessage: "503" }, undefined, now);
+	assert.equal(
+		retryWaitMessage(wait, retrySecondsLeft(wait, now), "esc cancel"),
+		"Retrying · server error 503 · in 34d 17h   esc cancel",
+	);
+});
+
 test("a reason too wide for the line is shortened by columns, so wide characters never overflow it", () => {
 	const wait = retryWaitFromEvent(
 		{ attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "内容被安全过滤器拦截请求因政策原因被拒绝" },

@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { basename } from "node:path";
 import type { Readable } from "node:stream";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { ENV_AGENT_DIR, ENV_STARTUP_BENCHMARK, ENV_TIMING, getAgentDir, getEnvValue, VERSION } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { engineCompileCacheWarmupEnv } from "../../utils/compile-cache-deferral.ts";
@@ -324,11 +325,11 @@ function attachPrewarmReadyReader(
 			const finish = () => {
 				if (settled) return;
 				settled = true;
-				clearTimeout(timer);
+				timer.clear();
 				waiters.delete(finish);
 				resolve(state);
 			};
-			const timer = setTimeout(finish, timeoutMs);
+			const timer = setLongTimeout(finish, timeoutMs);
 			timer.unref?.();
 			waiters.add(finish);
 		});

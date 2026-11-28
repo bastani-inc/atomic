@@ -798,8 +798,8 @@ async function constructAgentSession(
 			const onProviderStreamEvent = streamOptions?.onProviderStreamEvent ?? handleProviderStreamEvent;
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
 			const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
-			// SDKs treat timeout=0 as immediate. Use max int32 when the default idle timeout is disabled.
-			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? 2147483647 : httpIdleTimeoutMs;
+			// An explicit provider timeout of 0 expires immediately; a disabled default never starts a timer.
+			const effectiveTimeoutMs = httpIdleTimeoutMs === 0 ? Infinity : httpIdleTimeoutMs;
 			const timeoutMs = streamOptions?.timeoutMs ?? providerRetrySettings.timeoutMs ?? effectiveTimeoutMs;
 			const prepareRequest = async (signal: AbortSignal) => {
 				const authResult = await modelRuntime.getRequestAuth(model, {

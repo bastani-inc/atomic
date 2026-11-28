@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import {
 	type Component,
 	isHintActivation,
@@ -159,7 +160,7 @@ class RemoteComponent implements Component {
 	 * frame asked for after it is (see hideFramesUntilFresh).
 	 */
 	private hiddenUpTo: number | undefined;
-	private hiddenTimer: ReturnType<typeof setTimeout> | undefined;
+	private hiddenTimer: LongTimeout | undefined;
 	/** Speculative preview gate for engine widgets (the agent panel during `panelOnView`). */
 	private previewGate: WidgetPreviewGate = COMMITTED_WIDGET_PREVIEW_GATE;
 	/** Preview sequence number that produced the currently buffered `lines`, when staged/unpromoted. */
@@ -223,8 +224,8 @@ class RemoteComponent implements Component {
 		this.hiddenUpTo = this.requestId;
 		this.clearBufferedFrame();
 		this.dirty = true;
-		clearTimeout(this.hiddenTimer);
-		this.hiddenTimer = setTimeout(() => {
+		this.hiddenTimer?.clear();
+		this.hiddenTimer = setLongTimeout(() => {
 			this.showFramesAgain();
 			this.requestRender();
 		}, capMs);
@@ -232,7 +233,7 @@ class RemoteComponent implements Component {
 	}
 
 	private showFramesAgain(): void {
-		clearTimeout(this.hiddenTimer);
+		this.hiddenTimer?.clear();
 		this.hiddenTimer = undefined;
 		this.hiddenUpTo = undefined;
 	}
@@ -609,7 +610,7 @@ class RemoteComponent implements Component {
 		this.disposed = true;
 		this.cancelUpToInputId = 0;
 		this.inFlightClicks.clear();
-		clearTimeout(this.hiddenTimer);
+		this.hiddenTimer?.clear();
 		for (const requestId of [...this.pendingInputs.keys()]) this.resolveInput(requestId, undefined);
 		if (notifyEngine)
 			this.runtime.sendEngineCommand({ type: "engine_custom_dispose", componentId: this.componentId });

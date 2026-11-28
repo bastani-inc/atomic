@@ -1,3 +1,4 @@
+import { sleepFor } from "@bastani/atomic-timers";
 import type { AuthProvider, McpFetch } from "../auth-provider.js";
 import {
 	collectSecretsForMasking,
@@ -722,19 +723,10 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	/** Resolves false when the transport closed while waiting. */
 	private sleep(ms: number): Promise<boolean> {
 		const signal = this.controller.signal;
-		if (signal.aborted) return Promise.resolve(false);
-		return new Promise((resolve) => {
-			const onAbort = () => {
-				clearTimeout(timer);
-				resolve(false);
-			};
-			const timer = setTimeout(() => {
-				signal.removeEventListener("abort", onAbort);
-				resolve(true);
-			}, ms);
-			// A reconnect wait alone does not keep the process alive.
-			timer.unref?.();
-			signal.addEventListener("abort", onAbort, { once: true });
-		});
+		// A reconnect wait alone does not keep the process alive.
+		return sleepFor(ms, { signal, ref: false }).then(
+			() => true,
+			() => false,
+		);
 	}
 }

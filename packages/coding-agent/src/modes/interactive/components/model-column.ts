@@ -10,6 +10,8 @@
  * opened again.
  */
 
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
+
 /** The longest a row whose model just became known waits for its reasoning level before it shows the model alone. */
 export const MODEL_LEVEL_WAIT_MS = 1000;
 
@@ -87,7 +89,7 @@ export class ModelColumn {
 	/** The widest column this view painted at `heldWidth`, and the one it painted last. */
 	private held = 0;
 	private last = 0;
-	private timer: ReturnType<typeof setTimeout> | undefined;
+	private timer: LongTimeout | undefined;
 	private timerAt = Number.POSITIVE_INFINITY;
 	private readonly onExpire: (() => void) | undefined;
 
@@ -200,12 +202,11 @@ export class ModelColumn {
 		if (this.timer !== undefined && this.timerAt === deadline) return;
 		this.disarm();
 		this.timerAt = deadline;
-		this.timer = setTimeout(() => this.expire(deadline), Math.max(0, deadline - performance.now()));
-		this.timer.unref?.();
+		this.timer = setLongTimeoutAt(() => this.expire(deadline), deadline, { ref: false });
 	}
 
 	private disarm(): void {
-		if (this.timer !== undefined) clearTimeout(this.timer);
+		this.timer?.clear();
 		this.timer = undefined;
 		this.timerAt = Number.POSITIVE_INFINITY;
 	}

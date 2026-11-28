@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { raceWithAbortSignal } from "../../utils/abort.js";
 import { interactiveEngineStartupEnv } from "../../utils/interactive-engine-env.ts";
 import type {
@@ -730,16 +731,16 @@ export class ExtensionRunner {
 	async flushUIPromptNotifications(timeoutMs: number): Promise<{ timedOut: boolean }> {
 		const pending = [...this.pendingUIPromptNotifications];
 		if (pending.length === 0) return { timedOut: false };
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: LongTimeout | undefined;
 		try {
 			return await Promise.race([
 				Promise.allSettled(pending).then(() => ({ timedOut: false })),
 				new Promise<{ timedOut: boolean }>((resolve) => {
-					timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+					timer = setLongTimeout(() => resolve({ timedOut: true }), timeoutMs);
 				}),
 			]);
 		} finally {
-			clearTimeout(timer);
+			timer?.clear();
 		}
 	}
 

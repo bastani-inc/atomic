@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 import { normalizeProviderId } from "../provider-id.ts";
 import type { ProviderEnv } from "../types.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
@@ -182,18 +183,17 @@ function trackTokenExchange(): () => void {
  * is in flight, `false` when the bound passes first; never rejects.
  */
 export async function drainPendingOAuthRotations(timeoutMs: number = OAUTH_SHUTDOWN_DRAIN_MS): Promise<boolean> {
-	const deadline = Date.now() + timeoutMs;
+	const deadline = performance.now() + timeoutMs;
 	while (pendingTokenExchanges.size > 0) {
-		const remainingMs = deadline - Date.now();
-		if (remainingMs <= 0) return false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		if (deadline <= performance.now()) return false;
+		let timer: LongTimeout | undefined;
 		const expired = new Promise<void>((resolve) => {
-			timer = setTimeout(resolve, remainingMs);
+			timer = setLongTimeoutAt(resolve, deadline);
 		});
 		try {
 			await Promise.race([Promise.all(pendingTokenExchanges), expired]);
 		} finally {
-			clearTimeout(timer);
+			timer?.clear();
 		}
 	}
 	return true;

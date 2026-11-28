@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { PromptDisposition, UserMessageWithRawText } from "../../core/agent-session-types.js";
 import {
 	NO_QUEUED_MESSAGES,
@@ -527,14 +528,14 @@ export const RECEIPT_LOOKUP_TIMEOUT_MS = 2_000;
 
 /** What `work` resolves with if it does so within `ms`; undefined if it rejects or takes longer. */
 export async function settledWithin<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	const late = new Promise<undefined>((resolve) => {
-		timer = setTimeout(() => resolve(undefined), ms);
+		timer = setLongTimeout(() => resolve(undefined), ms);
 	});
 	try {
 		return await Promise.race([work.catch(() => undefined), late]);
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 }
 

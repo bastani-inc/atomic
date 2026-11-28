@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { TaskMessageDelivery } from "../../../coding-agent/src/core/tasks/supervisor.js";
 import {
 	type IntercomEventBus,
@@ -30,13 +31,13 @@ export function sendTaskTranscriptMessage(
 	const requestId = randomUUID();
 	const startedAt = now();
 	return new Promise<TaskMessageDelivery>((resolve, reject) => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: LongTimeout | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let settled = false;
 		const release = (): boolean => {
 			if (settled) return false;
 			settled = true;
-			clearTimeout(timer);
+			timer?.clear();
 			unsubscribe?.();
 			return true;
 		};
@@ -59,10 +60,14 @@ export function sendTaskTranscriptMessage(
 						},
 			);
 		});
-		timer = setTimeout(() => {
-			if (release()) resolve({ delivered: false, reason: "unconfirmed", timeoutMs, elapsedMs: now() - startedAt });
-		}, timeoutMs);
-		timer.unref?.();
+		timer = setLongTimeout(
+			() => {
+				if (release())
+					resolve({ delivered: false, reason: "unconfirmed", timeoutMs, elapsedMs: now() - startedAt });
+			},
+			timeoutMs,
+			{ ref: false },
+		);
 		try {
 			events.emit(SUBAGENT_RESULT_INTERCOM_EVENT, { to, message: text, requestId });
 		} catch (error) {

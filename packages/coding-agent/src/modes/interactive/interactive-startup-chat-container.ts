@@ -1,3 +1,4 @@
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { type ScrollView, type TUI, type TuiMouseEvent, WindowedContainer } from "@bastani/atomic-tui";
 import type { MessageRenderer } from "../../core/extensions/types.ts";
 import { markLifecycleTiming } from "../../core/lifecycle-timings.ts";
@@ -52,10 +53,10 @@ export class StartupChatContainer extends WindowedContainer {
 		const finish = (data?: T) => {
 			delete receiver.done;
 			this.abandonPaint = undefined;
-			clearTimeout(timer);
+			timer.clear();
 			if (paint(data) === true && scrollback) scrollback.requestRender();
 		};
-		const timer = setTimeout(finish, timeoutMs);
+		const timer = setLongTimeout(finish, timeoutMs);
 		receiver.done = finish;
 		this.abandonPaint = () => finish();
 		settlePaint(page, receiver);

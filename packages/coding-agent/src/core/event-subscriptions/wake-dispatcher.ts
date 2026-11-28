@@ -6,6 +6,8 @@
  * on a monotonic clock, so a wall-clock jump neither stalls nor rushes a wake.
  */
 
+import { setLongTimeout } from "@bastani/atomic-timers";
+
 export interface ScheduledWake {
 	cancel(): void;
 }
@@ -38,10 +40,7 @@ interface WakeEntry {
 const systemTimerHost: WakeTimerHost = {
 	now: () => Date.now(),
 	elapsed: () => performance.now(),
-	setTimer: (callback, ms) => {
-		const timer = setTimeout(callback, ms);
-		return { cancel: () => clearTimeout(timer) };
-	},
+	setTimer: (callback, ms) => ({ cancel: setLongTimeout(callback, ms).clear }),
 };
 
 /** Abort callbacks registered on owned signals; their owner runs them, so the signal itself holds no listener. */

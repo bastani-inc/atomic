@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { ENV_SESSION_DIR, isBunBinary } from "../../config.js";
 import { resolvePath } from "../../utils/paths.ts";
 import type { BrokerMultiNodeStatus, IntercomBrokerControl } from "../intercom-broker-control.js";
@@ -153,13 +154,16 @@ function postgresServer(selection: Extract<StorageSelection, { kind: "adapter" }
 }
 
 function withTimeout<T>(operation: Promise<T>, label: string, timeoutMs: number): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	return Promise.race([
 		operation,
 		new Promise<never>((_, reject) => {
-			timer = setTimeout(() => reject(new Error(`${label} did not answer within ${timeoutMs / 1000} s`)), timeoutMs);
+			timer = setLongTimeout(
+				() => reject(new Error(`${label} did not answer within ${timeoutMs / 1000} s`)),
+				timeoutMs,
+			);
 		}),
-	]).finally(() => clearTimeout(timer));
+	]).finally(() => timer?.clear());
 }
 
 /**

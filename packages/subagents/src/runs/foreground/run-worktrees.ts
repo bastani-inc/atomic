@@ -1,3 +1,4 @@
+import { setWallTimeoutAt } from "@bastani/atomic-timers";
 import { pathExists } from "../../shared/path-exists.js";
 import { type IntercomEventBus, SUBAGENT_FINISHING_EVENT } from "../../shared/types.js";
 import { ensureNamedWorktree, type NamedWorktree, type NamedWorktreeOptions } from "../shared/named-worktree.js";
@@ -273,14 +274,13 @@ export async function boundedWorktreeReply(
 	};
 	const interrupted = Promise.withResolvers<string>();
 	const endWait = () => interrupted.resolve(CLEANUP_IN_BACKGROUND);
-	const timer = setTimeout(endWait, Math.max(0, deadline - Date.now()));
-	timer.unref?.();
+	const timer = setWallTimeoutAt(endWait, deadline, { ref: false });
 	if (signal?.aborted) endWait();
 	else signal?.addEventListener("abort", endWait, { once: true });
 	try {
 		return await Promise.race([finished(), interrupted.promise]);
 	} finally {
-		clearTimeout(timer);
+		timer.clear();
 		signal?.removeEventListener("abort", endWait);
 	}
 }

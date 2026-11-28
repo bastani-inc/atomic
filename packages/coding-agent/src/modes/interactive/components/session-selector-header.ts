@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { type Component, truncateToWidth, visibleWidth } from "@bastani/atomic-tui";
 import { theme } from "../theme/theme.js";
 import type { SessionListNotice, SessionListVariant } from "./session-selector-list.ts";
@@ -18,7 +19,7 @@ export class SessionSelectorHeader implements Component {
 	private showPath = false;
 	private confirmingDeletePath: string | null = null;
 	private statusMessage: { type: "info" | "error"; message: string } | null = null;
-	private statusTimeout: ReturnType<typeof setTimeout> | null = null;
+	private statusTimeout: LongTimeout | null = null;
 	private variant: SessionListVariant = "sessions";
 	private title?: string;
 
@@ -61,7 +62,7 @@ export class SessionSelectorHeader implements Component {
 
 	private clearStatusTimeout(): void {
 		if (!this.statusTimeout) return;
-		clearTimeout(this.statusTimeout);
+		this.statusTimeout?.clear();
 		this.statusTimeout = null;
 	}
 
@@ -70,7 +71,7 @@ export class SessionSelectorHeader implements Component {
 		this.statusMessage = msg;
 		if (!msg || !autoHideMs) return;
 
-		this.statusTimeout = setTimeout(() => {
+		this.statusTimeout = setLongTimeout(() => {
 			this.statusMessage = null;
 			this.statusTimeout = null;
 			this.requestRender();

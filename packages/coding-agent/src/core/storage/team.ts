@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { getAgentDir } from "../../config.js";
 import { parseJsonFileContent } from "../../utils/json.ts";
 import { prepareLockTakeover } from "../lock-holder.js";
@@ -212,7 +213,7 @@ export const TEAM_CONNECTION_TIMEOUT_MS = 15_000;
  */
 async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeoutMs: number): Promise<void> {
 	const url = target.options.url as string;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	let started = 0;
 	let check: Promise<"answered"> | undefined;
 	let outcome: "answered" | "timed-out";
@@ -221,7 +222,7 @@ async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeo
 		started = Date.now();
 		check = checkConnection(target, agentDir, adapter).then(() => "answered" as const);
 		const deadline = new Promise<"timed-out">((resolveDeadline) => {
-			timer = setTimeout(() => resolveDeadline("timed-out"), timeoutMs);
+			timer = setLongTimeout(() => resolveDeadline("timed-out"), timeoutMs);
 		});
 		outcome = await Promise.race([check, deadline]);
 	} catch (error) {
@@ -243,7 +244,7 @@ async function checkConnectionWithin(target: JoinTarget, agentDir: string, timeo
 			cause: error as Error,
 		});
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 	if (outcome === "answered") return;
 	const timeout = new TeamProfileTimeoutError({

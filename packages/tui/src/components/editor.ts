@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { AutocompleteProvider, AutocompleteSuggestions } from "../autocomplete.ts";
 import { getKeybindings, type Keybinding } from "../keybindings.ts";
 import { decodePrintableKey, matchesKey } from "../keys.ts";
@@ -595,7 +596,7 @@ export class Editor implements Component, Focusable {
 	private editMenuState?: "regular" | "force" | null;
 	private autocompleteMaxVisible: number = 5;
 	private autocompleteAbort?: AbortController;
-	private autocompleteDebounceTimer?: ReturnType<typeof setTimeout>;
+	private autocompleteDebounceTimer?: LongTimeout;
 	/** The latest provider call of the editor's own lookups, until it ends. */
 	private providerCall?: ProviderCall;
 	private pendingAutocomplete?: AutocompleteRequestOptions;
@@ -2805,7 +2806,7 @@ export class Editor implements Component, Focusable {
 
 		const debounceMs = this.getAutocompleteDebounceMs(options);
 		if (debounceMs > 0) {
-			this.autocompleteDebounceTimer = setTimeout(() => {
+			this.autocompleteDebounceTimer = setLongTimeout(() => {
 				this.autocompleteDebounceTimer = undefined;
 				void this.startAutocompleteRequest(startToken, options, provider);
 			}, debounceMs);
@@ -3175,7 +3176,7 @@ export class Editor implements Component, Focusable {
 		this.pendingAutocomplete = undefined;
 		this.autocompleteStartToken += 1;
 		if (this.autocompleteDebounceTimer) {
-			clearTimeout(this.autocompleteDebounceTimer);
+			this.autocompleteDebounceTimer.clear();
 			this.autocompleteDebounceTimer = undefined;
 		}
 		this.autocompleteAbort?.abort();

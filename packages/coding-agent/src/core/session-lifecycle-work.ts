@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 import { asyncScope } from "./async-scope.ts";
 import { withTranspileCacheWriteOwner } from "./extensions/transpile-cache-writes.js";
 import type { SessionStore } from "./storage/session/types.js";
@@ -269,9 +270,9 @@ export function shutdownDeadline(
 	run(step: string, operation: () => void | Promise<void>): Promise<SessionWorkUnsettledError | undefined>;
 	clear(): void;
 } {
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	const expired = new Promise<"expired">((resolve) => {
-		timer = setTimeout(() => resolve("expired"), limitMs);
+		timer = setLongTimeout(() => resolve("expired"), limitMs);
 	});
 	let reported = false;
 	return {
@@ -283,7 +284,7 @@ export function shutdownDeadline(
 			reported = true;
 			return new SessionWorkUnsettledError(step, pendingSessionWork(session), limitMs);
 		},
-		clear: () => clearTimeout(timer),
+		clear: () => timer?.clear(),
 	};
 }
 
@@ -322,15 +323,15 @@ export async function untilShutdownHandlerDeadline(
 		await handlers;
 		return;
 	}
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	const expired = new Promise<"expired">((resolve) => {
-		timer = setTimeout(() => resolve("expired"), Math.max(0, deadline - performance.now()));
+		timer = setLongTimeoutAt(() => resolve("expired"), deadline);
 	});
 	try {
 		if ((await Promise.race([handlers.then(() => "done" as const), expired])) === "expired")
 			void handlers.catch(() => {});
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 }
 

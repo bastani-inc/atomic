@@ -7,6 +7,7 @@
  */
 
 import type { ExtensionContext } from "@bastani/atomic";
+import type { LongTimeout } from "@bastani/atomic-timers";
 import type { ParentAskHandoffRequest } from "./types-config.js";
 
 export interface ForegroundParentAskHandoff {
@@ -43,7 +44,7 @@ export interface SubagentState {
 		}
 	>;
 	lastForegroundControlId: string | null;
-	pendingForegroundControlNotices?: Map<string, ReturnType<typeof setTimeout>>;
+	pendingForegroundControlNotices?: Map<string, LongTimeout>;
 	lastUiContext: ExtensionContext | null;
 	/**
 	 * The Intercom id this session's own client registered under, by the Atomic session it registered for. Other

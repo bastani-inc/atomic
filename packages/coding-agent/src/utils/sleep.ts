@@ -1,18 +1,9 @@
-/**
- * Sleep helper that respects abort signal.
- */
+import { sleepFor } from "@bastani/atomic-timers";
+
+/** @deprecated New internal callers should use the shared deadline timer. */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal?.aborted) {
-			reject(new Error("Aborted"));
-			return;
-		}
-
-		const timeout = setTimeout(resolve, ms);
-
-		signal?.addEventListener("abort", () => {
-			clearTimeout(timeout);
-			reject(new Error("Aborted"));
-		});
+	if (!signal) return sleepFor(ms);
+	return sleepFor(ms, { signal }).catch((error) => {
+		throw signal.aborted ? new Error("Aborted") : error;
 	});
 }

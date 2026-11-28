@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { taskOutputText } from "./command-output.js";
 import { type NativeEvent, type OwnerSnapshot, spanElapsedMs, type TaskId, type TaskRecord } from "./contracts.js";
 import {
@@ -35,7 +36,6 @@ const OUTPUT_TAIL_LINES = 6;
 const LINE_CHARS = 160;
 const TITLE_CHARS = 120;
 /** Longest delay a host timer accepts before it overflows to an immediate fire. */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Where an owner's heartbeats go. The host binds its own chat; nothing here is model-provided. */
 export interface TaskHeartbeatDelivery {
@@ -65,12 +65,8 @@ export interface TaskHeartbeatClock {
 /** Times the cadence on the monotonic clock, so a step of the wall clock neither delays nor bunches heartbeats (#5058). */
 const systemClock: TaskHeartbeatClock = {
 	now: () => performance.now(),
-	setTimeout: (run, delayMs) => {
-		const handle = setTimeout(run, delayMs);
-		handle.unref();
-		return handle;
-	},
-	clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+	setTimeout: (run, delayMs) => setLongTimeout(run, delayMs, { ref: false }),
+	clearTimeout: (handle) => (handle as LongTimeout).clear(),
 };
 
 export interface TaskHeartbeatMonitorOptions {
@@ -251,7 +247,7 @@ export class TaskHeartbeatMonitor {
 		if (this.timer !== undefined && this.timerAt === wakeAt) return;
 		this.disarm();
 		if (!Number.isFinite(wakeAt)) return;
-		const delay = Math.min(Math.max(1, Math.ceil(wakeAt - this.clock.now())), MAX_TIMER_DELAY_MS);
+		const delay = Math.max(1, Math.ceil(wakeAt - this.clock.now()));
 		this.timerAt = wakeAt;
 		this.timer = this.clock.setTimeout(() => {
 			this.timer = undefined;

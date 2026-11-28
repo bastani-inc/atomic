@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import {
 	type Component,
 	isKeyRelease,
@@ -187,7 +188,7 @@ type DockState =
 			/** Which hold this is: its release names it by number, so it keeps nothing of the held rows alive. */
 			readonly hold: number;
 			readonly rows: HeldDockRows;
-			readonly timer: ReturnType<typeof setTimeout>;
+			readonly timer: LongTimeout;
 			/** Stops listening for a replaced renderer, which ends the hold. */
 			readonly offRenderer: () => void;
 			/** Tells the screen's hold that this one ended. */
@@ -341,7 +342,7 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 
 	const endDockHold = (held: DockState, key?: string) => {
 		if (dock !== held || held.kind !== "held") return;
-		clearTimeout(held.timer);
+		held.timer.clear();
 		held.offRenderer();
 		dock = { kind: "live" };
 		held.ended();
@@ -380,7 +381,7 @@ export function installTranscriptSlot(mode: InteractiveModeBase, switcher: Agent
 			const end = (key?: string) => {
 				if (dock.kind === "held" && dock.hold === hold) endDockHold(dock, key);
 			};
-			const timer = setTimeout(end, timeoutMs);
+			const timer = setLongTimeout(end, timeoutMs);
 			timer.unref?.();
 			const columns = tui.terminal.columns;
 			const fullscreenDock = mode.fullscreenDock;

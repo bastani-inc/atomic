@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createRequire } from "node:module";
 import type { DatabaseSync, SQLInputValue, StatementSync } from "node:sqlite";
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 
 /**
  * A connection on a thread of its own taking or holding a file's write lock: open from the moment it sends
@@ -46,7 +47,7 @@ export interface FileLock {
 /** A call waiting for its turn; one decided only at its turn (see `runDeferred`) is armed then. */
 interface Waiter {
 	deadline: number;
-	timer: ReturnType<typeof setTimeout> | undefined;
+	timer: LongTimeout | undefined;
 	/** The connection the call runs on: later calls on it wait behind this one (see `runDeferred`). */
 	readonly connection: DatabaseSync;
 	/** Runs the call if it can run now; whether it did. */
@@ -257,7 +258,7 @@ function runNextWaiter(file: string, gate: FileGate): void {
 		return;
 	}
 	gate.waiters.shift();
-	clearTimeout(waiter.timer);
+	waiter.timer?.clear();
 	ranThisTurn(file, gate);
 }
 
@@ -270,7 +271,7 @@ function failOverdue(file: string, gate: FileGate): void {
 	const overdue = gate.waiters.filter((waiting) => now >= waiting.deadline);
 	for (const waiter of overdue) {
 		gate.waiters.splice(gate.waiters.indexOf(waiter), 1);
-		clearTimeout(waiter.timer);
+		waiter.timer?.clear();
 		waiter.fail();
 	}
 	// The calls behind them get their turn.
@@ -395,7 +396,7 @@ function armWhenFree<T>(
 	// a timer runs ahead of. At its deadline it fails if the word is taken. While the word is free it keeps its place:
 	// a free lock is never reported busy, and its turn comes (see `runNextWaiter`), so its busy timeout bounds how long
 	// it waits for the lock, not for its turn.
-	waiter.timer = setTimeout(
+	waiter.timer = setLongTimeoutAt(
 		() =>
 			setImmediate(() => {
 				const index = gate.waiters.indexOf(waiter);
@@ -405,7 +406,7 @@ function armWhenFree<T>(
 				ranThisTurn(file, gate);
 				forgetIfIdle(file, gate);
 			}),
-		timeoutMs,
+		waiter.deadline,
 	);
 	waiter.tryRun = () => {
 		const ran = runAdmitted(state, run);
@@ -962,7 +963,7 @@ function armTry<T>(
 	waiter.deadline = performance.now() + timeoutMs;
 	// At its deadline it is tried once more if it is the oldest; refused, or behind others while the lock is taken, it
 	// fails with the refusal. Behind others while the lock is free, it keeps its place.
-	waiter.timer = setTimeout(
+	waiter.timer = setLongTimeoutAt(
 		() =>
 			setImmediate(() => {
 				const index = gate.waiters.indexOf(waiter);
@@ -977,7 +978,7 @@ function armTry<T>(
 				}
 				forgetIfIdle(file, gate);
 			}),
-		timeoutMs,
+		waiter.deadline,
 	);
 	waiter.tryRun = () => settle(attemptOnce(database, timeoutMs, attempt));
 	// Refused at its last try, it fails with that refusal; never tried, with SQLITE_BUSY as the runtime reports it.

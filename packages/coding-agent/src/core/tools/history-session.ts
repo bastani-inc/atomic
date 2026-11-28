@@ -1,4 +1,5 @@
 import { setImmediate } from "node:timers";
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import { asyncScope } from "../async-scope.ts";
 import type { SessionEntry } from "../session-manager-types.ts";
 import {
@@ -87,27 +88,26 @@ export function yieldTurn(): Promise<void> {
 	return new Promise((resolve) => setImmediate(resolve));
 }
 
-/** A signal that aborts after `ms`, or never for an unlimited (infinite) time budget. */
-function timeoutSignal(ms: number): AbortSignal {
-	return Number.isFinite(ms) ? AbortSignal.timeout(ms) : new AbortController().signal;
-}
-
 export class HistoryCallBudget {
 	readonly signal: AbortSignal | undefined;
 	private reservedBytes: number;
 	private readonly callSignal: AbortSignal;
+	private readonly clearCallTimer: () => void;
 	private readonly timeMs: number;
 	private readonly deadline: number;
-	private floor: { readonly until: number; readonly signal: AbortSignal } | undefined;
+	private floor: { readonly until: number; readonly signal: AbortSignal; clear(): void } | undefined;
 	private bytesLeft: number;
 	private rowsLeft: number;
 	private sliceStart = performance.now();
 
 	constructor(budget: HistoryBudget, signal: AbortSignal | undefined, noteBytes = NOTE_RESERVE_BYTES) {
+		signal?.throwIfAborted();
 		this.signal = signal;
 		this.timeMs = Math.max(STORE_WAIT_MIN_MS, budget.timeMs);
 		this.deadline = performance.now() + budget.timeMs;
-		this.callSignal = this.withCaller(timeoutSignal(this.timeMs));
+		const timeout = createTimeoutSignal(this.timeMs);
+		this.callSignal = this.withCaller(timeout.signal);
+		this.clearCallTimer = timeout.clear;
 		const reserve = Math.max(
 			Math.min(NOTE_RESERVE_BYTES, Math.floor(budget.bytes * 0.25)) + Math.max(0, noteBytes - NOTE_RESERVE_BYTES),
 			budget.bytes < NOTE_RESERVE_BYTES ? Math.min(noteBytes, Math.floor(budget.bytes / 2)) : 0,
@@ -115,7 +115,6 @@ export class HistoryCallBudget {
 		this.bytesLeft = Math.max(1, budget.bytes - reserve);
 		this.reservedBytes = budget.bytes - this.bytesLeft;
 		this.rowsLeft = budget.rows;
-		signal?.throwIfAborted();
 	}
 
 	get storeSignal(): AbortSignal {
@@ -125,11 +124,19 @@ export class HistoryCallBudget {
 	holdProgressFloor(): void {
 		const floorMs = Math.max(PROGRESS_FLOOR_MS, this.timeMs);
 		const until = performance.now() + floorMs;
-		this.floor = { until, signal: this.withCaller(timeoutSignal(floorMs)) };
+		this.floor?.clear();
+		const timeout = createTimeoutSignal(floorMs);
+		this.floor = { until, signal: this.withCaller(timeout.signal), clear: timeout.clear };
 	}
 
 	markProgress(): void {
+		this.floor?.clear();
 		this.floor = undefined;
+	}
+
+	dispose(): void {
+		this.clearCallTimer();
+		this.markProgress();
 	}
 
 	private withCaller(timeout: AbortSignal): AbortSignal {
@@ -153,7 +160,8 @@ export class HistoryCallBudget {
 		if (this.signal?.aborted) {
 			return Promise.reject(this.signal.reason ?? new Error("Operation aborted"));
 		}
-		if (this.storeSignal.aborted) {
+		const storeSignal = this.storeSignal;
+		if (storeSignal.aborted) {
 			return Promise.reject(new HistoryDeadlineError());
 		}
 		return new Promise<T>((resolve, reject) => {
@@ -164,15 +172,15 @@ export class HistoryCallBudget {
 					reject(new HistoryDeadlineError());
 				}
 			};
-			this.storeSignal.addEventListener("abort", onAbort, { once: true });
+			storeSignal.addEventListener("abort", onAbort, { once: true });
 			work.then(
 				(value) => {
-					this.storeSignal.removeEventListener("abort", onAbort);
+					storeSignal.removeEventListener("abort", onAbort);
 					resolve(value);
 				},
 				(error) => {
-					this.storeSignal.removeEventListener("abort", onAbort);
-					if (!this.signal?.aborted && this.storeSignal.aborted) {
+					storeSignal.removeEventListener("abort", onAbort);
+					if (!this.signal?.aborted && storeSignal.aborted) {
 						reject(new HistoryDeadlineError());
 					} else {
 						reject(error);

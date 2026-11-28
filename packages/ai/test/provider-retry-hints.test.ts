@@ -41,6 +41,22 @@ test("a 520 burst with retry_after recovers within maxRetries, waiting as long a
 	assert.equal(calls, 4);
 });
 
+test("a 503 retry hint longer than the native timer limit still delays the next request (#6807)", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+	const waitMs = 3_000_000_000;
+	const produce = vi
+		.fn<() => Promise<AssistantMessage>>()
+		.mockResolvedValueOnce(failure("503 service unavailable", waitMs))
+		.mockResolvedValueOnce(fauxAssistantMessage("recovered"));
+	const pending = retryAssistantCall(produce, { ...policy, maxRetryDelayMs: waitMs }, undefined);
+
+	await vi.advanceTimersByTimeAsync(waitMs - 1);
+	assert.equal(produce.mock.calls.length, 1);
+	await vi.advanceTimersByTimeAsync(1);
+	assert.equal(produce.mock.calls.length, 2);
+	assert.equal((await pending).stopReason, "stop");
+});
+
 test("a 520 burst longer than maxRetries hinted waits still gives up after maxRetries (#3623)", async () => {
 	const burst = Array.from({ length: 10 }, () => failure("520 status code (no body)", 45_000));
 	const { result, delays, calls } = await runRetries(burst);

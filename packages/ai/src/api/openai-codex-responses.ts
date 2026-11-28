@@ -1,4 +1,5 @@
 import type * as NodeZlib from "node:zlib";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { Tool as OpenAITool, ResponseInput, ResponseStreamEvent } from "openai/resources/responses/responses.js";
 
 import { clampThinkingLevel } from "../models.ts";
@@ -182,7 +183,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 function normalizeTimeoutMs(value: number | undefined): number | undefined {
 	if (value === undefined) return undefined;
-	if (!Number.isFinite(value) || value < 0) {
+	if (value !== Infinity && (!Number.isFinite(value) || value < 0)) {
 		throw new Error(`Invalid timeoutMs: ${String(value)}`);
 	}
 	return Math.floor(value);
@@ -1174,7 +1175,7 @@ async function connectWebSocket(
 
 	return new Promise<WebSocketLike>((resolve, reject) => {
 		let settled = false;
-		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let timeout: LongTimeout | undefined;
 		let socket: WebSocketLike;
 
 		// Bun's WebSocket names a refused certificate on its error event; Node.js's does not, so its connection is observed.
@@ -1192,7 +1193,7 @@ async function connectWebSocket(
 
 		const cleanup = () => {
 			if (timeout) {
-				clearTimeout(timeout);
+				timeout.clear();
 				timeout = undefined;
 			}
 			socket.removeEventListener("open", onOpen);
@@ -1239,7 +1240,7 @@ async function connectWebSocket(
 		signal?.addEventListener("abort", onAbort);
 
 		if (connectTimeoutMs > 0) {
-			timeout = setTimeout(() => {
+			timeout = setLongTimeout(() => {
 				fail(new Error(`WebSocket connect timeout after ${connectTimeoutMs}ms`), "connect_timeout");
 			}, connectTimeoutMs);
 		}

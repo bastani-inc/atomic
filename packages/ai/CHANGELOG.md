@@ -13,6 +13,7 @@ This package is Atomic's fork of `@earendil-works/pi-ai`, published as `@bastani
 
 - OpenAI Chat Completions and Responses requests now carry a fresh tracing ID on each attempt without changing prompt caching ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).
 - Gemini, Vertex, Pi, and Bedrock honor the request timeout before response headers. Keepalive pings, empty updates, and metadata no longer hide a stalled stream, and unresponsive callbacks no longer prevent cancellation or timeouts ([#6790](https://github.com/bastani-inc/atomic/issues/6790)).
+- Retry waits and response timeouts longer than about 25 days no longer fire immediately, and aborting still stops the wait ([#6807](https://github.com/bastani-inc/atomic/issues/6807)).
 - Preserve error codes and retry hints when an OpenAI Responses stream fails without an HTTP error status. OpenAI Responses and Codex no longer retry requests rejected because of a known quota limit.
 - Preserve retry delays sent inside failed Codex stream events, and treat OpenAI spending caps as exhausted quotas rather than temporary throttles.
 - OpenAI-compatible requests stop retrying when the account has run out of quota. Server errors now honor retry waits in the response body, and Bedrock stops retrying when the requested wait exceeds your limit; no settings changes are needed.

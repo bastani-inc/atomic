@@ -17,6 +17,7 @@
  * MIT License - Copyright (c) 2025 opentui
  */
 
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { EventEmitter } from "events";
 
 const ESC = "\x1b";
@@ -309,7 +310,7 @@ export type StdinBufferEventMap = {
  */
 export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	private buffer: string = "";
-	private timeout: ReturnType<typeof setTimeout> | null = null;
+	private timeout: LongTimeout | null = null;
 	private readonly timeoutMs: number;
 	private readonly escapeTimeoutMs: number;
 	private pasteMode: boolean = false;
@@ -330,7 +331,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 	public process(data: string | Buffer): void {
 		// Clear any pending timeout
 		if (this.timeout) {
-			clearTimeout(this.timeout);
+			this.timeout.clear();
 			this.timeout = null;
 		}
 
@@ -425,7 +426,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 			// including Alt+] followed by text, must retain bounded recovery.
 			if (TERMINAL_REPLY_HEADER_PATTERN.test(this.buffer)) return;
 			const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
-			this.timeout = setTimeout(() => {
+			this.timeout = setLongTimeout(() => {
 				const flushed = this.flush();
 
 				for (const sequence of flushed) {
@@ -455,7 +456,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	flush(): string[] {
 		if (this.timeout) {
-			clearTimeout(this.timeout);
+			this.timeout.clear();
 			this.timeout = null;
 		}
 
@@ -471,7 +472,7 @@ export class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
 
 	clear(): void {
 		if (this.timeout) {
-			clearTimeout(this.timeout);
+			this.timeout.clear();
 			this.timeout = null;
 		}
 		this.buffer = "";

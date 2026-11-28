@@ -1,9 +1,7 @@
 import type { RetryDeadline } from "@bastani/atomic-ai";
+import { setLongTimeoutAt } from "@bastani/atomic-timers";
 import { type DecisionPhase, DecisionTimeoutError } from "../decision/errors.js";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
-
-/** The largest delay `setTimeout` honors; a larger one fires immediately. */
-const MAX_DEADLINE_MS = 2_147_483_647;
 
 const CANCELLED_MESSAGE = "Structured output cancelled; no decision was accepted.";
 
@@ -20,13 +18,13 @@ export function validateTimeoutOverride(value: number | undefined): void {
 }
 
 /**
- * The wall-clock limit for one decision: an explicit `timeoutMs`, else the session's `httpIdleTimeoutMs`, else that
- * setting's default. Like the provider clients, an idle timeout of `0` (disabled) becomes the largest timer delay.
+ * The elapsed time limit for one decision: an explicit `timeoutMs`, else the session's `httpIdleTimeoutMs`, else that
+ * setting's default. An idle timeout of `0` disables the deadline.
  */
 export function resolveDecisionDeadlineMs(timeoutMs: number | undefined, httpIdleTimeoutMs?: number): number {
 	validateTimeoutOverride(timeoutMs);
 	const requested = timeoutMs ?? httpIdleTimeoutMs ?? SETTINGS_DEFAULTS.httpIdleTimeoutMs;
-	return requested === 0 ? MAX_DEADLINE_MS : Math.min(requested, MAX_DEADLINE_MS);
+	return requested === 0 ? Infinity : requested;
 }
 
 function formatDuration(milliseconds: number): string {
@@ -133,11 +131,11 @@ export async function withinDecisionDeadline<T>(
 			}),
 		);
 	if (options?.guardProviderRetries) trace.retryDeadline = { at: startedAt + timeoutMs, onExpired: expire };
-	const timer = setTimeout(expire, timeoutMs);
+	const timer = setLongTimeoutAt(expire, startedAt + timeoutMs);
 	try {
 		return await run({ signal: controller.signal, trace });
 	} finally {
-		clearTimeout(timer);
+		timer.clear();
 		callerSignal?.removeEventListener("abort", forwardCallerAbort);
 	}
 }

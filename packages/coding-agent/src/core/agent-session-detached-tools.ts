@@ -7,6 +7,7 @@ import type {
 	AgentToolResult,
 } from "@bastani/atomic-agent-core";
 import type { AssistantMessage, ToolCall, ToolResultMessage } from "@bastani/atomic-ai/compat";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import type { AgentSessionInternalSurface as AgentSession } from "./agent-session-methods.ts";
 import { deliverHeldTaskCompletions } from "./agent-session-tasks.js";
 import { finalizeToolResult } from "./agent-session-tool-hooks.ts";
@@ -574,7 +575,7 @@ export function detachableTool(
 			// on the call no longer detaches: it answers within the grace, or ends aborted and gives its place back.
 			let interrupted = false;
 			let graceMs: number | undefined;
-			let graceTimer: ReturnType<typeof setTimeout> | undefined;
+			let graceTimer: LongTimeout | undefined;
 			const forwardAbort = (): void => {
 				interrupted = true;
 				abort(signal?.reason);
@@ -590,7 +591,7 @@ export function detachableTool(
 					ready = true;
 					if (elapsed && !interrupted) open(DETACH);
 				});
-			const timer = setTimeout(() => {
+			const timer = setLongTimeout(() => {
 				elapsed = true;
 				if (ready && !interrupted) open(DETACH);
 			}, policy.afterMs);
@@ -614,7 +615,7 @@ export function detachableTool(
 				}
 			} finally {
 				hold.gate = undefined;
-				clearTimeout(timer);
+				timer.clear();
 				clearToolAbortGraceTimer(session, graceTimer);
 				readinessCallbacks.delete(operationSignal);
 				signal?.removeEventListener("abort", forwardAbort);

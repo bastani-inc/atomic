@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import type { AgentMessage } from "@bastani/atomic-agent-core";
 import type { CompactorApi } from "@bastani/atomic-ai";
 import type { Usage } from "@bastani/atomic-ai/compat";
+import { createTimeoutSignal } from "@bastani/atomic-timers";
 import { redactCredentialShapes } from "../../utils/credential-redaction.js";
 import { messageIsLlmVisible } from "../messages.ts";
 import { normalizeModelFailureSignal } from "../model-fallback-failures.ts";
@@ -371,77 +372,81 @@ export async function requestCompactorOutput(request: CompactorRequest): Promise
 		request.timeoutMs !== undefined && Number.isFinite(request.timeoutMs) && request.timeoutMs > 0
 			? request.timeoutMs
 			: COMPACTOR_REQUEST_TIMEOUT_MS;
-	const timeout = AbortSignal.timeout(timeoutMs);
-	const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
-	const failure = (
-		error: Error | string,
-		options?: { code?: "http-error" | "network-error"; status?: number; retryable?: boolean },
-	): never => {
-		if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
-		if (request.stop?.aborted) {
-			throw new CompactorFailure("request aborted", { code: "request-aborted", model: request.modelId });
-		}
-		if (timeout.aborted) {
-			throw new CompactorFailure(`timed out after ${timeoutMs} ms`, {
-				code: "timeout",
-				timeoutMs,
+	const { signal: timeout, clear } = createTimeoutSignal(timeoutMs);
+	try {
+		const signal = AbortSignal.any([request.signal, timeout, ...(request.stop ? [request.stop] : [])]);
+		const failure = (
+			error: Error | string,
+			options?: { code?: "http-error" | "network-error"; status?: number; retryable?: boolean },
+		): never => {
+			if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+			if (request.stop?.aborted) {
+				throw new CompactorFailure("request aborted", { code: "request-aborted", model: request.modelId });
+			}
+			if (timeout.aborted) {
+				throw new CompactorFailure(`timed out after ${timeoutMs} ms`, {
+					code: "timeout",
+					timeoutMs,
+					model: request.modelId,
+				});
+			}
+			const message = typeof error === "string" ? error : error.message || error.name;
+			throw new CompactorFailure(redact(message, secrets), {
+				code: options?.code ?? "network-error",
+				status: options?.status,
+				retryable: options?.retryable,
 				model: request.modelId,
 			});
+		};
+		const url = resolveCompactorUrl(baseUrl, request.endpointPath);
+		const headers: Record<string, string> = { "Content-Type": "application/json", ...customHeaders };
+		if (apiKey && !hasHeaderCaseInsensitive(headers, "authorization")) {
+			headers.Authorization = `Bearer ${apiKey}`;
 		}
-		const message = typeof error === "string" ? error : error.message || error.name;
-		throw new CompactorFailure(redact(message, secrets), {
-			code: options?.code ?? "network-error",
-			status: options?.status,
-			retryable: options?.retryable,
-			model: request.modelId,
-		});
-	};
-	const url = resolveCompactorUrl(baseUrl, request.endpointPath);
-	const headers: Record<string, string> = { "Content-Type": "application/json", ...customHeaders };
-	if (apiKey && !hasHeaderCaseInsensitive(headers, "authorization")) {
-		headers.Authorization = `Bearer ${apiKey}`;
-	}
-	let response: Response;
-	try {
-		response = await (request.fetchFn ?? fetch)(url, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(buildCompactorPayload(request)),
-			signal,
-		});
-	} catch (error) {
-		if (!(error instanceof Error) || signal.aborted) {
-			return failure(error instanceof Error ? error : String(error), { code: "network-error" });
+		let response: Response;
+		try {
+			response = await (request.fetchFn ?? fetch)(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(buildCompactorPayload(request)),
+				signal,
+			});
+		} catch (error) {
+			if (!(error instanceof Error) || signal.aborted) {
+				return failure(error instanceof Error ? error : String(error), { code: "network-error" });
+			}
+			const hint = await sinkholeHint(url, request.resolveHost ?? resolveHostAddresses);
+			return failure(`${describeWithCauses(error)}${hint}`, { code: "network-error" });
 		}
-		const hint = await sinkholeHint(url, request.resolveHost ?? resolveHostAddresses);
-		return failure(`${describeWithCauses(error)}${hint}`, { code: "network-error" });
+		if (!response.ok) {
+			const { status } = response;
+			const body = await readHttpErrorBody(response);
+			const quotaExhausted = normalizeModelFailureSignal({ status, message: body }).kind === "quota_exhausted";
+			return failure(httpErrorMessage(status, body, secrets), {
+				code: "http-error",
+				status,
+				retryable: quotaExhausted ? false : undefined,
+			});
+		}
+		let body: CompactorResponse;
+		try {
+			body = (await response.json()) as CompactorResponse;
+		} catch (error) {
+			if (request.signal.aborted || timeout.aborted) return failure(error instanceof Error ? error : String(error));
+			throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
+		}
+		if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
+		if (typeof body !== "object" || body === null) {
+			throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
+		}
+		let text = responseText(body);
+		for (const secret of secrets) {
+			if (secret) text = text.replaceAll(secret, "[redacted]");
+		}
+		if (!text) throw new CompactorFailure("empty output", { code: "empty-output", model: request.modelId });
+		const usage = compactorUsage(body.usage);
+		return { text, ...(usage ? { usage } : {}) };
+	} finally {
+		clear();
 	}
-	if (!response.ok) {
-		const { status } = response;
-		const body = await readHttpErrorBody(response);
-		const quotaExhausted = normalizeModelFailureSignal({ status, message: body }).kind === "quota_exhausted";
-		return failure(httpErrorMessage(status, body, secrets), {
-			code: "http-error",
-			status,
-			retryable: quotaExhausted ? false : undefined,
-		});
-	}
-	let body: CompactorResponse;
-	try {
-		body = (await response.json()) as CompactorResponse;
-	} catch (error) {
-		if (request.signal.aborted || timeout.aborted) return failure(error instanceof Error ? error : String(error));
-		throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
-	}
-	if (request.signal.aborted) throw new CompactionCancelledError({ reason: "aborted" });
-	if (typeof body !== "object" || body === null) {
-		throw new CompactorFailure("malformed response", { code: "malformed-response", model: request.modelId });
-	}
-	let text = responseText(body);
-	for (const secret of secrets) {
-		if (secret) text = text.replaceAll(secret, "[redacted]");
-	}
-	if (!text) throw new CompactorFailure("empty output", { code: "empty-output", model: request.modelId });
-	const usage = compactorUsage(body.usage);
-	return { text, ...(usage ? { usage } : {}) };
 }

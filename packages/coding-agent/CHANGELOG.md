@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Long retry waits, tool deadlines, and other configurable timers no longer fire immediately when they exceed about 25 days. Chat shows multi-day waits in days, and invalid duration settings are named when loaded ([#6807](https://github.com/bastani-inc/atomic/issues/6807)).
 - Chat and subagents skip fallback models on the same account when a credential is rejected, quota runs out, or the rate-limit wait exceeds your retry limit, even if those models use different provider names. No settings change is needed ([#6779](https://github.com/bastani-inc/atomic/issues/6779)).
 - When you use Claude Opus 5.5 or another supported Claude model directly through Anthropic, progress before tool calls now appears as assistant text instead of being mixed into thinking summaries. To see the old summaries instead, set `"anthropicThinkingDisplay": "summarized"` and `"hideThinkingBlock": false` in `settings.json` ([#6776](https://github.com/bastani-inc/atomic/issues/6776)).
 - Atomic sends a fresh tracing ID for every OpenAI Chat Completions and Responses attempt, so separate requests can be traced even within the same session ([#6794](https://github.com/bastani-inc/atomic/issues/6794)).

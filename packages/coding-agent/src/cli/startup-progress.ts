@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import chalk from "chalk";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "../core/debug.ts";
 
@@ -49,7 +50,7 @@ export function createStartupProgress(
 	let anyShown = false;
 	let finished = false;
 	let current: PendingStep | undefined;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let timer: LongTimeout | undefined;
 	let writable = true;
 	const show = (line: string) => {
 		anyShown = true;
@@ -63,7 +64,7 @@ export function createStartupProgress(
 		}
 	};
 	const stopTimer = () => {
-		if (timer !== undefined) clearTimeout(timer);
+		timer?.clear();
 		timer = undefined;
 	};
 	const settleCurrent = () => {
@@ -85,7 +86,7 @@ export function createStartupProgress(
 				show(message);
 				return;
 			}
-			timer = setTimeout(() => {
+			timer = setLongTimeout(() => {
 				timer = undefined;
 				step.shown = true;
 				show(message);

@@ -3,6 +3,7 @@ import { constants } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { setWallTimeoutAt } from "@bastani/atomic-timers";
 import { getBinDir } from "../../config.js";
 import { createChildProcessEnvironment } from "../../utils/child-process.ts";
 import { createGitEnvironment } from "../../utils/git-env.ts";
@@ -235,11 +236,11 @@ async function taskkillTree(pid: number, deadline: number, isAlive: () => boolea
 			return;
 		}
 		const done = () => {
-			clearTimeout(bound);
+			bound.clear();
 			const killed = output.split(/\r?\n/).map((line) => Number(/\d+/.exec(line)?.[0]));
 			resolve(killed.filter((id) => Number.isInteger(id) && id !== process.pid));
 		};
-		const bound = setTimeout(done, Math.max(0, deadline - Date.now()));
+		const bound = setWallTimeoutAt(done, deadline);
 		taskkill.stdout?.on("data", (chunk: Buffer) => {
 			output += chunk.toString("utf8");
 		});

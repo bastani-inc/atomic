@@ -3,6 +3,7 @@ import { access, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import type { AssistantMessage } from "@bastani/atomic-ai/compat";
+import { type LongTimeout, setLongTimeoutAt } from "@bastani/atomic-timers";
 import { failureDebugFields, reportDebugAsync as reportDebug } from "./debug.ts";
 import { timeCheckoutRestore } from "./resume/timings.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -345,7 +346,7 @@ interface QueuedCheckoutCapture {
 	readonly promise: Promise<WorktreeSnapshotCapture>;
 	readonly resolve: (value: WorktreeSnapshotCapture) => void;
 	readonly reject: (reason: unknown) => void;
-	readonly timer: ReturnType<typeof setTimeout>;
+	readonly timer: LongTimeout;
 }
 
 /**
@@ -419,7 +420,7 @@ function beginCapture(
 }
 
 function promoteQueuedCapture(queued: QueuedCheckoutCapture): void {
-	clearTimeout(queued.timer);
+	queued.timer.clear();
 	const next = queued.start();
 	next.result.then(queued.resolve, queued.reject);
 }
@@ -455,11 +456,11 @@ function enqueueBehindActiveCapture(
 	capture: (startedAt: number, lookUpAgain: boolean) => Promise<WorktreeSnapshotCapture>,
 ): Promise<WorktreeSnapshotCapture> {
 	const { promise, resolve: resolveNext, reject: rejectNext } = Promise.withResolvers<WorktreeSnapshotCapture>();
-	const timer = setTimeout(
+	const timer = setLongTimeoutAt(
 		() => expireActiveCaptureWait(slots, key, active),
-		Math.max(0, active.startedMs + queuedCaptureWaitMs() - performance.now()),
+		active.startedMs + queuedCaptureWaitMs(),
+		{ ref: false },
 	);
-	timer.unref?.();
 	const queued: QueuedCheckoutCapture = {
 		start: () => beginCapture(slots, key, capture, true),
 		promise,

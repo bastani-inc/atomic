@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isStaleExtensionContextError } from "@bastani/atomic";
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import {
 	existingArtifactPath,
 	PARENT_CANCEL_CAUSE,
@@ -212,7 +213,8 @@ export async function deliverSubagentIntercomMessageEvent(
 	return new Promise((resolve) => {
 		let settled = false;
 		let unsubscribe: (() => void) | undefined;
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		let timer: LongTimeout | undefined;
+		let committedTimer: ReturnType<typeof setTimeout> | undefined;
 		// Exactly one side delivers the result (#5018): the relay claims it right before dispatching, and a
 		// deadline that passes before that claim takes it back for the inline tool result, so the relay drops it.
 		let owner: "pending" | "relay" | "inline" = "pending";
@@ -229,7 +231,8 @@ export async function deliverSubagentIntercomMessageEvent(
 		const finish = (delivered: SubagentIntercomDelivery) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			timer?.clear();
+			clearTimeout(committedTimer);
 			try {
 				unsubscribe?.();
 			} catch (error) {
@@ -257,12 +260,12 @@ export async function deliverSubagentIntercomMessageEvent(
 			return;
 		}
 		if (timeoutMs !== false) {
-			timer = setTimeout(() => {
+			timer = setLongTimeout(() => {
 				if (takeInline()) {
 					finish("undelivered");
 					return;
 				}
-				timer = setTimeout(() => finish("unconfirmed"), RESULT_RELAY_COMMITTED_TIMEOUT_MS);
+				committedTimer = setTimeout(() => finish("unconfirmed"), RESULT_RELAY_COMMITTED_TIMEOUT_MS);
 			}, timeoutMs);
 		}
 		try {

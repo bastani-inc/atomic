@@ -1,3 +1,5 @@
+import { sleepFor } from "@bastani/atomic-timers";
+
 const CANCEL_MESSAGE = "Login cancelled";
 const TIMEOUT_MESSAGE = "Device flow timed out";
 const SLOW_DOWN_TIMEOUT_MESSAGE =
@@ -24,29 +26,15 @@ export type OAuthDeviceCodePollOptions<T> = {
 };
 
 export function abortableSleep(ms: number, signal: AbortSignal, cancelMessage: string): Promise<void> {
-	return new Promise((resolve, reject) => {
-		if (signal.aborted) {
-			reject(new Error(cancelMessage));
-			return;
-		}
-
-		const onAbort = () => {
-			clearTimeout(timeout);
-			reject(new Error(cancelMessage));
-		};
-		const timeout = setTimeout(() => {
-			signal.removeEventListener("abort", onAbort);
-			resolve();
-		}, ms);
-
-		signal.addEventListener("abort", onAbort, { once: true });
+	return sleepFor(ms, { signal }).catch((error) => {
+		throw signal.aborted ? new Error(cancelMessage) : error;
 	});
 }
 
 export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodePollOptions<T>): Promise<T> {
 	const deadline =
 		typeof options.expiresInSeconds === "number"
-			? Date.now() + options.expiresInSeconds * 1000
+			? performance.now() + options.expiresInSeconds * 1000
 			: Number.POSITIVE_INFINITY;
 	let intervalMs = Math.max(
 		MINIMUM_INTERVAL_MS,
@@ -55,13 +43,13 @@ export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodePollOpt
 
 	let slowDownResponses = 0;
 	if (options.waitBeforeFirstPoll) {
-		const remainingMs = deadline - Date.now();
+		const remainingMs = deadline - performance.now();
 		if (remainingMs > 0) {
 			await abortableSleep(Math.min(intervalMs, remainingMs), options.signal, CANCEL_MESSAGE);
 		}
 	}
 
-	while (Date.now() < deadline) {
+	while (performance.now() < deadline) {
 		if (options.signal.aborted) {
 			throw new Error(CANCEL_MESSAGE);
 		}
@@ -86,7 +74,7 @@ export async function pollOAuthDeviceCodeFlow<T>(options: OAuthDeviceCodePollOpt
 					: Math.max(MINIMUM_INTERVAL_MS, intervalMs + SLOW_DOWN_INTERVAL_INCREMENT_MS);
 		}
 
-		const remainingMs = deadline - Date.now();
+		const remainingMs = deadline - performance.now();
 		if (remainingMs <= 0) {
 			break;
 		}

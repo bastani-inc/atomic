@@ -22,6 +22,7 @@ import {
 	renderToolSample,
 	toCodemodeIdentifier,
 } from "@bastani/atomic-codemode";
+import { setLongTimeout } from "@bastani/atomic-timers";
 import { ENV_CODEMODE_MAX_WORKERS, getCodemodeWorkerUrlAsync, getEnvValue, getQuickJSWasmPath } from "../../config.js";
 import type { ExtensionToolContext } from "../../core/extensions/context-types.ts";
 import type { ToolNamespace } from "../../core/extensions/tool-types.ts";
@@ -78,7 +79,7 @@ function reserveCodemodeWorker(
 	if (signal?.aborted) return Promise.resolve("aborted");
 	return new Promise((resolve) => {
 		const settle = (outcome: "reserved" | "aborted" | "timeout") => {
-			clearTimeout(timer);
+			timer.clear();
 			signal?.removeEventListener("abort", onAbort);
 			const index = codemodeWorkerWaiters.indexOf(grant);
 			if (index >= 0) codemodeWorkerWaiters.splice(index, 1);
@@ -86,7 +87,7 @@ function reserveCodemodeWorker(
 		};
 		const grant = () => settle("reserved");
 		const onAbort = () => settle("aborted");
-		const timer = setTimeout(() => settle("timeout"), timeoutMs);
+		const timer = setLongTimeout(() => settle("timeout"), timeoutMs);
 		codemodeWorkerWaiters.push(grant);
 		signal?.addEventListener("abort", onAbort, { once: true });
 		admitCodemodeWorkers();

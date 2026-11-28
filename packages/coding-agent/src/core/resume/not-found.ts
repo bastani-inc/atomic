@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongTimeout } from "@bastani/atomic-timers";
 import { isLocalOnlySessionStorage } from "../agent-rehydrate-errors.ts";
 import type { StorageDescriptor } from "../storage/database.js";
 import { isRetryableStorageError, StorageUnavailableError } from "../storage/errors.js";
@@ -80,9 +81,9 @@ export async function withResumeLookupDeadline<T>(
 	timeoutMs: number,
 ): Promise<T> {
 	const startedAt = Date.now();
-	let timer: NodeJS.Timeout | undefined;
+	let timer: LongTimeout | undefined;
 	const deadline = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(
+		timer = setLongTimeout(
 			() =>
 				reject(
 					new ResumeCatalogTimeoutError({
@@ -98,6 +99,6 @@ export async function withResumeLookupDeadline<T>(
 	try {
 		return await Promise.race([lookup, deadline]);
 	} finally {
-		clearTimeout(timer);
+		timer?.clear();
 	}
 }

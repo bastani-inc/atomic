@@ -1,3 +1,4 @@
+import { type LongTimeout, setLongInterval } from "@bastani/atomic-timers";
 import type { TUI } from "../tui.ts";
 import { Text } from "./text.ts";
 
@@ -18,7 +19,7 @@ export class Loader extends Text {
 	private frames = [...DEFAULT_FRAMES];
 	private intervalMs = DEFAULT_INTERVAL_MS;
 	private currentFrame = 0;
-	private intervalId: NodeJS.Timeout | null = null;
+	private intervalId: LongTimeout | null = null;
 	private ui: TUI | null = null;
 	private renderIndicatorVerbatim = false;
 	private spinnerColorFn: (str: string) => string;
@@ -51,7 +52,7 @@ export class Loader extends Text {
 
 	stop(): void {
 		if (this.intervalId) {
-			clearInterval(this.intervalId);
+			this.intervalId.clear();
 			this.intervalId = null;
 		}
 	}
@@ -79,7 +80,7 @@ export class Loader extends Text {
 		if (this.frames.length <= 1) {
 			return;
 		}
-		this.intervalId = setInterval(() => {
+		this.intervalId = setLongInterval(() => {
 			this.currentFrame = (this.currentFrame + 1) % this.frames.length;
 			this.updateDisplay();
 		}, this.intervalMs);

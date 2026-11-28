@@ -15,6 +15,7 @@ import {
 } from "@bastani/atomic-ai";
 import type { SimpleStreamOptions } from "@bastani/atomic-ai/compat";
 import { getAtomicEnvValue } from "@bastani/atomic-ai/utils/provider-env";
+import { type LongTimeout, setWallTimeoutAt } from "@bastani/atomic-timers";
 import { getDefaultCacheRetention } from "./cache-retention.ts";
 import type { ModelRuntime } from "./model-runtime.js";
 import type { ModelRuntimeSimpleStreamOptions } from "./model-runtime-streaming.ts";
@@ -80,7 +81,7 @@ interface ActiveRun extends CacheWarmRequest {
 	phase: "streaming" | "idle";
 	nextWarmAt: number;
 	extensionOverride: boolean;
-	timer?: ReturnType<typeof setTimeout>;
+	timer?: LongTimeout;
 }
 
 /** One replayable prompt, bounded by its original start time rather than refresh activity. */
@@ -186,7 +187,7 @@ export class CacheWarmer {
 		const run = this.run;
 		if (!run) return;
 		this.run = undefined;
-		if (run.timer) clearTimeout(run.timer);
+		run.timer?.clear();
 		run.controller.abort();
 	}
 	private stop(reason: string, stopped?: Pick<CacheWarmingStatus, "decision" | "extensionOverride">): void {
@@ -206,15 +207,15 @@ export class CacheWarmer {
 			this.stop(run.phase === "idle" ? "30-minute idle safety limit reached" : "one-hour safety limit reached");
 			return;
 		}
-		run.timer = setTimeout(
+		run.timer = setWallTimeoutAt(
 			() => {
 				void this.runRefresh(() => this.refresh(run)).catch(() => {
 					if (this.run === run) this.stop("inactive");
 				});
 			},
-			Math.max(0, run.nextWarmAt - Date.now()),
+			run.nextWarmAt,
+			{ ref: false },
 		);
-		run.timer.unref?.();
 	}
 	private async refresh(run: ActiveRun): Promise<void> {
 		run.timer = undefined;
