@@ -39,7 +39,12 @@ function heading(dialect: StorageDialect, body: string, chunks: string): string 
 		["chunks", chunks],
 	]);
 	return `(SELECT CASE WHEN ${entry("type")}='worktree_snapshot' THEN CAST(${value} AS TEXT) END
-		FROM (SELECT ${pg ? postgresJsonb(body) : body} AS p${pg ? " OFFSET 0" : " LIMIT -1 OFFSET 0"}) parsed)`;
+		FROM (SELECT ${pg ? postgresJsonb(body) : sqliteHeadingBody(body)} AS p${pg ? " OFFSET 0" : " LIMIT -1 OFFSET 0"}) parsed)`;
+}
+
+function sqliteHeadingBody(body: string): string {
+	// A bad entry must remain a read-time error, not make an unrelated write or schema upgrade fail.
+	return `CASE WHEN json_valid(${body}) THEN ${body} ELSE '{}' END`;
 }
 
 /** Generated Atomic messages with an exact first key and a known non-snapshot type need no JSON decoding. */
@@ -64,29 +69,34 @@ async function prepareHeadings(tx: SqliteExecutor, dialect: StorageDialect, entr
 	const exists = dialect.columnExists(entries, CAPTURE_HEADING);
 	if (!(await tx.get(exists.sql, ...exists.params)))
 		await tx.exec(`ALTER TABLE ${entries} ADD COLUMN ${CAPTURE_HEADING} TEXT`);
-	if (dialect.name === "postgres") {
-		await tx.exec(postgresTrigger(dialect, entries));
-	} else {
-		const project = heading(dialect, "NEW.entry_json", "NEW.chunks");
-		const candidate = couldBeCapture("NEW.entry_json");
-		for (const [event, suffix, when] of [
-			["INSERT", "insert", candidate],
-			["UPDATE OF entry_json,chunks", "update", `(${candidate}) OR OLD.${CAPTURE_HEADING} IS NOT NULL`],
-		] as const) {
-			await tx.exec(`CREATE TRIGGER IF NOT EXISTS ${entries}_capture_${suffix} AFTER ${event} ON ${entries} WHEN ${when} BEGIN
-				UPDATE ${entries} SET ${CAPTURE_HEADING}=CASE WHEN ${candidate} THEN ${project} END
-				WHERE session_id=NEW.session_id AND seq=NEW.seq; END`);
-		}
-	}
+	if (dialect.name === "postgres") await tx.exec(postgresTrigger(dialect, entries));
+	else for (const statement of sqliteTriggers(dialect, entries)) await tx.exec(statement);
 }
 
-async function backfill(tx: SqliteExecutor, dialect: StorageDialect, entries: string): Promise<void> {
+function sqliteTriggers(dialect: StorageDialect, entries: string): string[] {
+	const project = heading(dialect, "NEW.entry_json", "NEW.chunks");
+	const candidate = couldBeCapture("NEW.entry_json");
+	return [
+		["INSERT", "insert", candidate],
+		["UPDATE OF entry_json,chunks", "update", `(${candidate}) OR OLD.${CAPTURE_HEADING} IS NOT NULL`],
+	].map(
+		([
+			event,
+			suffix,
+			when,
+		]) => `CREATE TRIGGER IF NOT EXISTS ${entries}_capture_${suffix} AFTER ${event} ON ${entries} WHEN ${when} BEGIN
+				UPDATE ${entries} SET ${CAPTURE_HEADING}=CASE WHEN ${candidate} THEN ${project} END
+				WHERE session_id=NEW.session_id AND seq=NEW.seq; END`,
+	);
+}
+
+function backfill(dialect: StorageDialect, entries: string): string {
 	// Snapshots are normally the only old rows that match the second condition. The first-key fast path leaves other
 	// entries alone; an older or externally inserted entry not written in Atomic's key order is checked as JSON.
 	const body = "entry_json";
-	const kind = dialect.jsonText(body, "type");
-	await tx.exec(`UPDATE ${entries} SET ${CAPTURE_HEADING}=${heading(dialect, body, "chunks")}
-		WHERE ${CAPTURE_HEADING} IS NULL AND CASE WHEN ${couldBeCapture(body)} THEN ${kind}='worktree_snapshot' ELSE false END`);
+	const kind = dialect.jsonText(dialect.name === "sqlite" ? `(${sqliteHeadingBody(body)})` : body, "type");
+	return `UPDATE ${entries} SET ${CAPTURE_HEADING}=${heading(dialect, body, "chunks")}
+		WHERE ${CAPTURE_HEADING} IS NULL AND CASE WHEN ${couldBeCapture(body)} THEN ${kind}='worktree_snapshot' ELSE false END`;
 }
 
 function createIndex(entries: string, concurrently = false): string {
@@ -163,7 +173,7 @@ export async function ensureCaptureHeadings(
 	}
 	const setup = async (tx: SqliteExecutor) => {
 		await prepareHeadings(tx, dialect, entries);
-		await backfill(tx, dialect, entries);
+		await tx.exec(backfill(dialect, entries));
 		await tx.exec(createIndex(entries));
 	};
 	if (dialect.name === "sqlite") {
@@ -171,9 +181,16 @@ export async function ensureCaptureHeadings(
 		if (
 			!queueSqliteSchemaSetup(database, schema.ledger, {
 				done: (catalog) => sqliteReady(catalog),
-				async run(ctx) {
-					await ctx.flushWrites();
-					await setup(ctx.tx);
+				run(ctx) {
+					if (sqliteReady(ctx.catalog)) return;
+					if (!ctx.hasColumn(entries, CAPTURE_HEADING)) {
+						ctx.enqueue(`ALTER TABLE ${entries} ADD COLUMN ${CAPTURE_HEADING} TEXT`);
+						ctx.noteColumnAdded(entries, CAPTURE_HEADING);
+					}
+					for (const statement of sqliteTriggers(dialect, entries)) ctx.enqueue(statement);
+					// Only skip a known-empty table. The session upgrade may also mark an existing table as created.
+					if (ctx.catalog === undefined || ctx.tableExisted(entries)) ctx.enqueue(backfill(dialect, entries));
+					ctx.enqueue(createIndex(entries));
 				},
 			})
 		)
@@ -208,7 +225,7 @@ export async function migrateCaptureHeadings(
 	await ensureStorageSchemaOnce(database, { ...schema, domain: `${schema.domain}-trigger` }, (tx) =>
 		prepareHeadings(tx, dialect, entries),
 	);
-	await backfill(database, dialect, entries);
+	await database.exec(backfill(dialect, entries));
 	// The adapter opens each statement below outside a transaction. Never record the step for an unfinished index.
 	for (;;) {
 		found = await postgresState(database, entries);

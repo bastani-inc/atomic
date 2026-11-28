@@ -11,7 +11,7 @@ import {
 	SqlSessionStore,
 } from "../../packages/coding-agent/src/core/storage/session/sql-session-store.js";
 import { postgresSkipReason, withPostgresDatabase } from "../helpers/postgres-database.js";
-import { storageBackends } from "../helpers/storage-backends.js";
+import { sqliteFileBackend, storageBackends } from "../helpers/storage-backends.js";
 import { header, instrumented, user } from "./storage-conformance-matrix-fork-staging-helpers.js";
 
 for (const backend of storageBackends) {
@@ -77,6 +77,37 @@ for (const backend of storageBackends) {
 		},
 	);
 }
+
+test("SQLite backfills captures when an older store also needs its session schema completed (#6802)", async () => {
+	const scope = await sqliteFileBackend.openScope();
+	try {
+		const database = await scope.connect();
+		const store = await SqlSessionStore.open(database);
+		const entries = renderStorageIdentifiers("sessions", SESSION_TABLES).entries;
+		await database.exec(`DROP TRIGGER ${entries}_capture_insert; DROP TRIGGER ${entries}_capture_update;
+			DROP INDEX ${entries}_capture_heading; ALTER TABLE ${entries} DROP COLUMN snapshot_capture_heading;
+			DROP TABLE session_open`);
+		await store.create(header("existing"), [
+			{
+				type: "worktree_snapshot",
+				id: "capture",
+				parentId: null,
+				root: "/project",
+				timestamp: "2026-11-25T00:00:00.000Z",
+				snapshotId: "archived-before-upgrade",
+				captureMs: 5,
+			},
+		]);
+		const reopened = await SqlSessionStore.open(database);
+		const result = await reopened.readBranchSnapshotMetadata(["existing"]);
+		assert.deepEqual(
+			result.get("existing")?.entries.map(({ snapshotId }) => snapshotId),
+			["archived-before-upgrade"],
+		);
+	} finally {
+		await scope.close();
+	}
+});
 
 test.skipIf(postgresSkipReason !== undefined)(
 	"PostgreSQL migrate builds the capture index concurrently and backfills existing rows (#6802)",

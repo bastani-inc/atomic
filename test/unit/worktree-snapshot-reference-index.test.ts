@@ -305,8 +305,8 @@ test("reopening a session store and run journal finds their index triggers and c
 
 	assert.deepEqual(
 		opens,
-		[5, 0],
-		"the first opens install the triggers of each of the three sources, the chunk cleanup (#4954) and the guard of the blobs forks inherit (#6560), the second none",
+		[7, 0],
+		"the first opens install the three source triggers, chunk cleanup, the inherited-blob guard and two capture-heading triggers; the second installs none",
 	);
 	assert.deepEqual(
 		(
