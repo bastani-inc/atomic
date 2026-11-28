@@ -67,6 +67,9 @@ export interface BlueprintBuildConfig {
 	readonly fetchAction?: ActionFetcher;
 }
 
+/** Reports a wait to write the ledger, with the first worktree this build is setting up. */
+export type BlueprintLedgerWait = (root: string, message: string) => void;
+
 /** A blueprint that did not complete: which one, which step, and where its log is. */
 export interface BlueprintFailure {
 	readonly scope: BlueprintScope;
@@ -542,6 +545,7 @@ async function executeBuild(
 	repositories: readonly BlueprintRepository[],
 	config: BlueprintBuildConfig,
 	signal: AbortSignal | undefined,
+	onLedgerWait: BlueprintLedgerWait | undefined,
 ): Promise<BlueprintBuildOutcome> {
 	const platform = config.platform ?? hostPlatform();
 	const now = config.now ?? Date.now;
@@ -600,9 +604,11 @@ async function executeBuild(
 		workspaces: new Map(),
 		roots: new Map(),
 	};
+	const writeLedger = (update: (current: BlueprintLedger) => BlueprintLedger) =>
+		updateLedger(config.storeDir, update, (message) => onLedgerWait?.(trusted[0]!.root, message));
 	const startedAt = new Date(now()).toISOString();
 	await inPhase("ledger", "the build ledger could not be written", () =>
-		updateLedger(config.storeDir, (current) => ({
+		writeLedger((current) => ({
 			...current,
 			roots: {
 				...current.roots,
@@ -637,7 +643,7 @@ async function executeBuild(
 			writeSessionEnvironment(run, trusted),
 		);
 		await inPhase("ledger", "the build ledger could not be written", () =>
-			updateLedger(config.storeDir, (current) => {
+			writeLedger((current) => {
 				const workspaces = { ...current.workspaces };
 				for (const [key, entry] of run.workspaces) {
 					if (entry === null) delete workspaces[key];
@@ -735,10 +741,11 @@ export async function runBlueprintBuild(
 	repositories: readonly BlueprintRepository[],
 	config: BlueprintBuildConfig,
 	signal?: AbortSignal,
+	onLedgerWait?: BlueprintLedgerWait,
 ): Promise<BlueprintBuildOutcome> {
 	signal?.throwIfAborted();
 	try {
-		return await executeBuild(repositories, config, signal);
+		return await executeBuild(repositories, config, signal, onLedgerWait);
 	} catch (error) {
 		if (signal?.aborted) throw error;
 		const crash = isBlueprintError(error) ? error : crashedBuild(error);

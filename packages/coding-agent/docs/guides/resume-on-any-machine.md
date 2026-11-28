@@ -195,6 +195,7 @@ Stopping and concurrent builds:
 - **Graceful stop (Ctrl-C, signals, or RPC stdin closing).** Atomic stops running build processes and rebuilds the worktree on the next resume.
 - **Abrupt kill (`SIGKILL`).** On Unix, the next resume cancels the interrupted build, terminates confirmed recorded build processes, sets that worktree aside so no session reuses it, and restores and builds a fresh worktree with a warning naming the set-aside path and logs. Atomic cleans up set-aside worktrees once no process uses them ([Pooling and set-aside worktrees](/worktree-snapshots/reference#idle-reuse-eviction-and-set-aside-worktrees)). On Windows, step processes exit with Atomic, so the next resume rebuilds the same worktree.
 - **Concurrent resumes on one worktree.** Only one build runs per worktree. Switching back to a session whose build is still running joins it. Another Atomic process waits up to 5 minutes (printing a stderr line or emitting `blueprint_build_waiting`) before rebuilding with a warning.
+- **Concurrent blueprint ledger updates.** Builds on the same machine take turns saving their results. Atomic tells you when it is waiting for another writer. If it can tell that writer has stopped, it continues without waiting for the lock to expire. Locks from older versions that do not identify a writer still expire after 15 seconds without a refresh.
 
 To override the mode default, set `resume.waitForBlueprint` in settings:
 

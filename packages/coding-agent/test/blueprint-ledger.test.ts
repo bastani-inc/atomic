@@ -9,12 +9,17 @@ import {
 	realpathSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test, vi } from "vitest";
+import { bunExecutable, spawnProcess } from "../../../test/helpers/runtime.js";
+import { lockHolderPath, takeoverLockPath } from "../src/core/lock-takeover.js";
+import { processStartTokenAsync } from "../src/core/process-start-token.js";
 import {
 	type BlueprintLedger,
 	blueprintDigest,
@@ -163,7 +168,152 @@ describe("reading the blueprint ledger (#4588)", () => {
 	});
 });
 
+const LEDGER_MODULE = fileURLToPath(new URL("../src/core/resume/blueprint/ledger.ts", import.meta.url));
+const writerGate = () => join(store, "allow-ledger-write");
+const ledgerLock = () => `${ledgerPath(store)}.lock`;
+
+function ledgerFiles(): string[] {
+	// The advisory mutex is intentionally never unlinked; an open handle may still refer to it.
+	const mutex = basename(takeoverLockPath(ledgerLock()));
+	return readdirSync(join(store, "blueprint-builds")).filter((name) => name !== mutex);
+}
+
+function holdLedgerInChild() {
+	return spawnProcess(
+		[
+			bunExecutable(),
+			"--eval",
+			`
+				const { existsSync } = await import("node:fs");
+				const { updateLedger } = await import(${JSON.stringify(LEDGER_MODULE)});
+				await updateLedger(${JSON.stringify(store)}, (ledger) => {
+					const gate = ${JSON.stringify(writerGate())};
+					const sleeper = new Int32Array(new SharedArrayBuffer(4));
+					console.log("locked");
+					while (!existsSync(gate)) Atomics.wait(sleeper, 0, 0, 20);
+					return { ...ledger, roots: { ...ledger.roots, child: { state: "success", at: "child" } } };
+				});
+			`,
+		],
+		{ stdout: "pipe", stderr: "inherit" },
+	);
+}
+
+async function waitForLedgerHolder(child: ReturnType<typeof holdLedgerInChild>): Promise<void> {
+	const stdout = child.stdout!.getReader();
+	try {
+		const { value } = await stdout.read();
+		assert.equal(new TextDecoder().decode(value).trim(), "locked");
+	} finally {
+		stdout.releaseLock();
+	}
+}
+
 describe("updating the blueprint ledger (#4588)", () => {
+	test.each(["exited", "PID reused"] as const)(
+		"a fresh lock is reclaimed when its writer is gone (%s) (#6804)",
+		async (reason) => {
+			const writer = holdLedgerInChild();
+			try {
+				await waitForLedgerHolder(writer);
+			} finally {
+				writer.kill("SIGKILL");
+				await writer.exited;
+			}
+			assert.ok(existsSync(ledgerLock()), "the killed writer left the lock behind");
+			if (reason === "PID reused") {
+				const file = lockHolderPath(ledgerLock());
+				const holder = JSON.parse(readFileSync(file, "utf8")) as { pid: number; started: string };
+				const runningStart = await processStartTokenAsync(process.pid);
+				assert.ok(runningStart && holder.started && runningStart !== holder.started);
+				// Simulate a kernel assigning the recorded PID to this live process with a different start.
+				writeFileSync(file, JSON.stringify({ ...holder, pid: process.pid }));
+			}
+			const waits: string[] = [];
+			assert.deepEqual(
+				await updateLedger(
+					store,
+					() => VALID,
+					(message) => waits.push(message),
+				),
+				VALID,
+			);
+			assert.deepEqual(waits, [], "a dead writer does not make the next writer wait");
+			assert.deepEqual(await readLedger(store), VALID);
+		},
+	);
+
+	test("a live writer keeps even an overdue lock and both processes' updates survive (#6804)", async () => {
+		const writer = holdLedgerInChild();
+		let pending: Promise<BlueprintLedger> | undefined;
+		try {
+			await waitForLedgerHolder(writer);
+			const wait = Promise.withResolvers<string>();
+			// Advance only the waiter's clock, leaving the live writer's heartbeat timestamps intact.
+			const wallTime = Date.now();
+			const now = vi.spyOn(Date, "now").mockReturnValue(wallTime + 20_000);
+			try {
+				pending = updateLedger(
+					store,
+					(current) => ({
+						...current,
+						roots: { ...current.roots, parent: { state: "success", at: "parent" } },
+					}),
+					wait.resolve,
+				);
+				assert.match(await Promise.race([wait.promise, pending.then(() => "updated early")]), /blueprint ledger/);
+				assert.equal(existsSync(ledgerPath(store)), false);
+			} finally {
+				now.mockRestore();
+			}
+			writeFileSync(writerGate(), "");
+			assert.equal(await writer.exited, 0);
+			await pending;
+			assert.deepEqual((await readLedger(store)).roots, {
+				child: { state: "success", at: "child" },
+				parent: { state: "success", at: "parent" },
+			});
+			assert.deepEqual(ledgerFiles(), ["ledger.json"]);
+		} finally {
+			if (writer.exitCode === null) writer.kill("SIGKILL");
+			await writer.exited;
+			await pending?.catch(() => {});
+		}
+	});
+
+	test("a lock from an older writer is reclaimed only after its heartbeat expires (#6804)", async () => {
+		mkdirSync(ledgerLock(), { recursive: true });
+		let waits = 0;
+		await updateLedger(
+			store,
+			() => VALID,
+			() => {
+				waits++;
+				utimesSync(ledgerLock(), 0, 0);
+			},
+		);
+		assert.equal(waits, 1, "the fresh ownerless lock was not taken early");
+		assert.deepEqual(await readLedger(store), VALID);
+	});
+
+	test("a delayed writer's release does not remove a legacy writer's replacement lock (#6804)", async () => {
+		const writer = holdLedgerInChild();
+		const path = ledgerPath(store);
+		let release: (() => Promise<void>) | undefined;
+		try {
+			await waitForLedgerHolder(writer);
+			utimesSync(`${path}.lock`, 0, 0);
+			release = await lockfile.lock(path, { realpath: false, stale: 15_000 });
+			writeFileSync(writerGate(), "");
+			assert.equal(await writer.exited, 0);
+			assert.ok(existsSync(`${path}.lock`), "the legacy writer still holds the lock it took");
+		} finally {
+			if (writer.exitCode === null) writer.kill("SIGKILL");
+			await writer.exited;
+			await release?.();
+		}
+	});
+
 	test("an update starts from the empty ledger, creates the store and returns what it wrote (#4588)", async () => {
 		const seen: BlueprintLedger[] = [];
 		const next = await updateLedger(join(store, "nested", "store"), (ledger) => {
@@ -198,7 +348,7 @@ describe("updating the blueprint ledger (#4588)", () => {
 	test("the file is indented JSON with a trailing newline and no temporary file is left behind (#4588)", async () => {
 		await updateLedger(store, () => VALID);
 		assert.equal(readFileSync(ledgerPath(store), "utf8"), `${JSON.stringify(VALID, null, 2)}\n`);
-		assert.deepEqual(readdirSync(join(store, "blueprint-builds")), ["ledger.json"]);
+		assert.deepEqual(ledgerFiles(), ["ledger.json"]);
 	});
 
 	test.skipIf(process.platform === "win32")("the ledger file is readable by its owner only (#4588)", async () => {
@@ -213,7 +363,7 @@ describe("updating the blueprint ledger (#4588)", () => {
 			}),
 			/stop/u,
 		);
-		assert.deepEqual(readdirSync(join(store, "blueprint-builds")), []);
+		assert.deepEqual(ledgerFiles(), []);
 	});
 
 	test("updates asked for at the same time all apply, one after the other, and leave no lock or temporary file (#4588)", async () => {
@@ -231,7 +381,7 @@ describe("updating the blueprint ledger (#4588)", () => {
 			results.map((ledger) => Object.keys(ledger.roots).length),
 			[1, 2, 3, 4, 5, 6, 7, 8],
 		);
-		assert.deepEqual(readdirSync(join(store, "blueprint-builds")), ["ledger.json"]);
+		assert.deepEqual(ledgerFiles(), ["ledger.json"]);
 	});
 
 	test("two updates in the same millisecond keep both entries (#4588)", async () => {

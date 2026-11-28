@@ -6,6 +6,7 @@ import {
 	type BlueprintBuildConfig,
 	type BlueprintBuildOutcome,
 	type BlueprintLayer,
+	type BlueprintLedgerWait,
 	type BlueprintRepository,
 	describeBlueprints,
 	needsRebuild,
@@ -88,6 +89,7 @@ export interface SetUpBlueprintsOptions {
 	readonly earlier?: readonly BlueprintCheckout[];
 	readonly config: BlueprintBuildConfig;
 	readonly signal?: AbortSignal;
+	readonly onLedgerWait?: BlueprintLedgerWait;
 }
 
 /**
@@ -96,7 +98,9 @@ export interface SetUpBlueprintsOptions {
 async function setUpAndDescribe(options: SetUpBlueprintsOptions): Promise<ResumedBlueprints> {
 	const restored = options.restored.map(blueprintRepository);
 	const outcome =
-		restored.length === 0 ? undefined : await runBlueprintBuild(restored, options.config, options.signal);
+		restored.length === 0
+			? undefined
+			: await runBlueprintBuild(restored, options.config, options.signal, options.onLedgerWait);
 	const layers: BlueprintLayer[] = [...(outcome?.layers ?? [])];
 	const described: [readonly BlueprintCheckout[] | undefined, "in-place" | "earlier"][] = [
 		[options.inPlace, "in-place"],

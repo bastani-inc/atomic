@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, test } from "vitest";
 import { useTemporaryAgentDir } from "../../../test/helpers/temporary-agent-dir.js";
 import { GitSandbox } from "../../../test/helpers/worktree-snapshot.js";
 import { renameReplacing } from "../src/core/rename-retry.js";
-import { readLedger } from "../src/core/resume/blueprint/ledger.ts";
+import { onBlueprintBuildWaiting } from "../src/core/resume/blueprint/barrier.ts";
+import { ledgerPath, readLedger } from "../src/core/resume/blueprint/ledger.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { openNodeSqliteDatabase } from "../src/core/storage/node-sqlite.ts";
 import { SqlSessionStore } from "../src/core/storage/session/sql-session-store.ts";
@@ -391,6 +393,36 @@ describe("resuming sessions with several checkouts and without any (#4588)", () 
 		const plain = await SessionManager.create(await sqlStore("outside-sessions"), outside);
 		await plain.appendMessage({ role: "user", content: "hi", timestamp: Date.now() });
 		ready(await prepareSessionResume(plain, { ...options(), launchCwd: outside }));
+	});
+
+	test("resume announces a ledger wait before the restored worktrees build (#6804)", async () => {
+		const { manager } = await recordTwoCheckouts(`maintenance: ${mark("one")}\n`, `maintenance: ${mark("two")}\n`);
+		const resumeOptions = options();
+		const ledger = ledgerPath(sandbox.path("host"));
+		mkdirSync(dirname(ledger), { recursive: true });
+		const release = await lockfile.lock(ledger, { realpath: false });
+		const waits: string[] = [];
+		const progress: string[] = [];
+		let released: Promise<void> | undefined;
+		const unsubscribe = onBlueprintBuildWaiting(({ message }) => {
+			if (!message.includes("blueprint ledger")) return;
+			waits.push(message);
+			assert.deepEqual(ran(), []);
+			released ??= release();
+		});
+		try {
+			const resumed = ready(
+				await prepareSessionResume(manager, { ...resumeOptions, onProgress: (message) => progress.push(message) }),
+			);
+			assert.equal(waits.length, 1, JSON.stringify(progress));
+			assert.match(waits[0]!, /Waiting for another Atomic process/);
+			assert.ok(progress.includes(waits[0]!));
+			assert.deepEqual(resumed.blueprintNotices, []);
+			assert.equal(ran().length, 2);
+		} finally {
+			unsubscribe();
+			await (released ?? release());
+		}
 	});
 
 	test("a build ledger that cannot be read never rejects a resume and rebuilds the restored worktrees it cannot vouch for (#4588)", async () => {
