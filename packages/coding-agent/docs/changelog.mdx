@@ -10,6 +10,15 @@ description: "What's new in Atomic"
   After each release, the publish-release skill regenerates this page in its own docs PR.
 */}
 
+<Update label="November 28, 2026" description="0.10.17-alpha.1">
+
+Atomic opens large existing session databases without upfront migration stalls and speeds up continuing recent sessions.
+
+- **Instant startup on large session stores.** Atomic moves worktree snapshot capture headings into a dedicated `session_capture_headings` table populated lazily per session on demand instead of altering or scanning `session_entries` on startup, while `atomic storage migrate` backfills existing snapshots in bounded batches ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+- **Faster session continuation and ID prefix lookup.** Continuing the most recent session (`atomic -c`) and resolving session ID prefixes (`--session`, `--fork`) skip loading search text for non-matching sessions ([#6823](https://github.com/bastani-inc/atomic/pull/6823)).
+
+</Update>
+
 <Update label="November 27, 2026" description="0.10.16">
 
 Atomic resumes large sessions faster, recovers sooner from provider failures, and makes progress easier to follow.
