@@ -34,6 +34,11 @@ cli(
 cli("core/rename-retry.ts", "backoff", "Grows only to RENAME_BACKOFF_MAX_MS; not the caller's total budget.");
 cli("core/resume/blueprint/build-lock.ts", "ms", "Only fixed BUILD_LOCK_POLL_MS and LOCK_IO_RETRY_MS pauses.");
 cli("core/resume/blueprint/process.ts", "ms", "Spawn refusals retry within a fixed two-second window.");
+cli(
+	"core/resume/blueprint/process.ts",
+	"Number.NaN",
+	"A literal NaN gives a one-turn timer and preserves the runtime's invalid-budget warning.",
+);
 cli("core/session-append-recovery.ts", "delayMs", "Only FIRST_NOTICE_MS and REPEAT_NOTICE_MS.");
 cli(
 	"core/session-append-recovery.ts",

@@ -3,6 +3,7 @@ import { setLongTimeoutAt } from "@bastani/atomic-timers";
 import { type DecisionPhase, DecisionTimeoutError } from "../decision/errors.js";
 import { SETTINGS_DEFAULTS } from "../settings-defaults.ts";
 
+const DISABLED_IDLE_DECISION_DEADLINE_MS = 2_147_483_647;
 const CANCELLED_MESSAGE = "Structured output cancelled; no decision was accepted.";
 
 /** The failure for an aborted decision: the deadline error when the deadline fired, otherwise a plain cancellation. */
@@ -19,12 +20,12 @@ export function validateTimeoutOverride(value: number | undefined): void {
 
 /**
  * The elapsed time limit for one decision: an explicit `timeoutMs`, else the session's `httpIdleTimeoutMs`, else that
- * setting's default. An idle timeout of `0` disables the deadline.
+ * setting's default. Disabled idle timeouts still use the documented fallback decision deadline.
  */
 export function resolveDecisionDeadlineMs(timeoutMs: number | undefined, httpIdleTimeoutMs?: number): number {
 	validateTimeoutOverride(timeoutMs);
 	const requested = timeoutMs ?? httpIdleTimeoutMs ?? SETTINGS_DEFAULTS.httpIdleTimeoutMs;
-	return requested === 0 ? Infinity : requested;
+	return requested === 0 ? DISABLED_IDLE_DECISION_DEADLINE_MS : requested;
 }
 
 function formatDuration(milliseconds: number): string {

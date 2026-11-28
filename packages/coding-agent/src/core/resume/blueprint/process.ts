@@ -240,10 +240,18 @@ export async function runLoggedProcess(
 			killChildProcessTree(child, exited);
 		};
 		const { timeoutMs } = options;
-		const timer = setLongTimeout(() => {
+		const expire = () => {
 			timedOut = true;
 			stop();
-		}, timeoutMs - waitedMs);
+		};
+		let cancelTimer: () => void;
+		if (Number.isNaN(timeoutMs)) {
+			// Preserve the runtime's once-only warning for an invalid SDK budget (#5707).
+			const invalidTimer = setTimeout(expire, Number.NaN);
+			cancelTimer = () => clearTimeout(invalidTimer);
+		} else {
+			cancelTimer = setLongTimeout(expire, timeoutMs - waitedMs).clear;
+		}
 		const onAbort = () => stop();
 		if (copiesOutput) {
 			const fail = (what: string, error: Error) => {
@@ -273,7 +281,7 @@ export async function runLoggedProcess(
 		}
 		const settle = () => {
 			if (child.pid !== undefined) watch?.(child.pid, false);
-			timer.clear();
+			cancelTimer();
 			options.signal?.removeEventListener("abort", onAbort);
 		};
 		options.signal?.addEventListener("abort", onAbort);
@@ -293,7 +301,7 @@ export async function runLoggedProcess(
 			});
 		};
 		const ended = async (exitStatus: number | null, exitSignal: NodeJS.Signals | null, exitError?: Error) => {
-			timer.clear();
+			cancelTimer();
 			options.signal?.removeEventListener("abort", onAbort);
 			await settleTree(tree, stopped);
 			await copying;

@@ -549,6 +549,7 @@ describe("running a logged process (#4588)", () => {
 		"a retried command's timeout reports the time spent asleep before it started (#5707)",
 		async () => {
 			const held = heldNode();
+			const realNow = performance.now.bind(performance);
 			const wall = vi.spyOn(Date, "now").mockReturnValue(1_000);
 			const monotonic = vi.spyOn(performance, "now").mockReturnValue(0);
 			try {
@@ -556,7 +557,12 @@ describe("running a logged process (#4588)", () => {
 					() =>
 						stepProcessWatcher.run(
 							(_pid, running) => {
-								if (running) return;
+								if (running) {
+									// While the child runs, the monotonic clock advances from the simulated retry time.
+									const startedAt = realNow();
+									monotonic.mockImplementation(() => 50 + (realNow() - startedAt));
+									return;
+								}
 								// The child has been stopped after 605 more milliseconds awake.
 								wall.mockReturnValue(2_005);
 								monotonic.mockReturnValue(655);
@@ -625,12 +631,9 @@ describe("running a logged process (#4588)", () => {
 			const held = heldNode();
 			const timeoutMs = 3_000;
 			const waitedMs = 2_000;
-			const sleeper = new Int32Array(new SharedArrayBuffer(4));
 			let firstTry = 0;
 			let started = false;
-			// The step's timers run on a fake clock, so starting the copied program and stopping it take no time on it. The
-			// wait before the second try is real: the step measures it on the real clocks.
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
 			try {
 				const stepRun = stepProcessWatcher.run(
 					(_pid, running) => {
@@ -643,8 +646,7 @@ describe("running a logged process (#4588)", () => {
 								if (tries === 1) firstTry = Date.now();
 								if (tries !== 2) return;
 								// The second try starts two of the step's three seconds after the first.
-								const left = firstTry + waitedMs - Date.now();
-								if (left > 0) Atomics.wait(sleeper, 0, 0, left);
+								vi.setSystemTime(firstTry + waitedMs);
 								held.release();
 							},
 						),
@@ -660,6 +662,7 @@ describe("running a logged process (#4588)", () => {
 				assert.equal(result.exit.spawnError, undefined);
 				assert.ok(result.exit.elapsedMs >= waitedMs, `the step took ${result.exit.elapsedMs} ms with its wait`);
 			} finally {
+				vi.useRealTimers();
 				held.release();
 			}
 		},

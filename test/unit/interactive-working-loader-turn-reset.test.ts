@@ -82,14 +82,14 @@ test("turn_start resets extension cadence and fences delegate callbacks after re
 		loadingAnimation: loader,
 	} as unknown as InteractiveModeBase;
 	try {
-		const oldTick = timers.capturedAnimationCallbacks()[0]!;
 		timers.advanceBy(40);
 		assert.match(workingLine(loader), /^ Y /);
+		const oldTick = timers.capturedTimeoutCallbacks().at(-1)!;
 
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
 
 		assert.match(workingLine(loader), /^ X /);
-		assert.equal(timers.intervalCount(), 1);
+		assert.equal(timers.timeoutCount(), 1);
 		const afterReset = renders;
 		oldTick();
 		assert.match(workingLine(loader), /^ X /);
@@ -99,7 +99,7 @@ test("turn_start resets extension cadence and fences delegate callbacks after re
 		timers.advanceBy(1);
 		assert.match(workingLine(loader), /^ Y /);
 
-		const activeTick = timers.capturedAnimationCallbacks()[1]!;
+		const activeTick = timers.capturedTimeoutCallbacks().at(-1)!;
 		loader.stop();
 		const stoppedLine = workingLine(loader);
 		const afterStop = renders;
@@ -222,18 +222,18 @@ test("turn_end holds a delegated extension loader on its last frame, fencing its
 	try {
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_start" } as never);
 		assert.match(workingLine(mode.loadingAnimation as AtomicWorkingLoader), /^ X /);
-		assert.equal(timers.intervalCount(), 1);
-		assert.equal(timers.intervalDelays().at(-1), 137);
-		const completedTurnTick = timers.capturedAnimationCallbacks().at(-1)!;
+		assert.equal(timers.timeoutCount(), 1);
+		assert.equal(timers.timeoutDelays().at(-1), 137);
 		timers.advanceBy(137);
 		assert.match(workingLine(mode.loadingAnimation as AtomicWorkingLoader), /^ Y /);
+		const completedTurnTick = timers.capturedTimeoutCallbacks().at(-1)!;
 		const heldLoader = mode.loadingAnimation as AtomicWorkingLoader;
 		const beforeHeld = renders;
 
 		await InteractiveModeBase.prototype.handleEvent.call(mode, { type: "turn_end" } as never);
 
 		assert.equal(mode.loadingAnimation, heldLoader, "the row stays mounted between turns");
-		assert.equal(timers.intervalCount(), 0);
+		assert.equal(timers.timeoutCount(), 0);
 		assert.equal(renders, beforeHeld, "nothing on screen changed, so nothing repaints");
 		timers.advanceBy(137 * 3);
 		assert.match(workingLine(heldLoader), /^ Y /, "the custom indicator keeps its last frame");
@@ -247,8 +247,8 @@ test("turn_end holds a delegated extension loader on its last frame, fencing its
 		const nextLoader = mode.loadingAnimation as AtomicWorkingLoader;
 		assert.equal(nextLoader, heldLoader, "the next turn restarts the same row");
 		assert.match(workingLine(nextLoader), /^ X /);
-		assert.equal(timers.intervalCount(), 1);
-		assert.equal(timers.intervalDelays().at(-1), 137);
+		assert.equal(timers.timeoutCount(), 1);
+		assert.equal(timers.timeoutDelays().at(-1), 137);
 		const afterRestart = renders;
 		completedTurnTick();
 		assert.equal(renders, afterRestart, "prior delegated callback stays fenced after restart");

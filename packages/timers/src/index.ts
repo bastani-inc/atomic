@@ -46,13 +46,15 @@ function schedule(
 	const arm = (remaining: number) => {
 		// Round up so a fractional deadline does not get truncated to an earlier millisecond.
 		const delay = Math.min(Math.max(1, Math.ceil(remaining)), maxDelay);
-		timer = setTimeout(() => {
+		const armed = setTimeout(() => {
+			if (timer !== armed) return;
 			timer = undefined;
 			const remaining = deadline - now();
 			if (remaining > 0) arm(remaining);
 			else callback();
 		}, delay);
-		if (!referenced) timer.unref?.();
+		timer = armed;
+		if (!referenced) armed.unref?.();
 	};
 	if (deadline !== Infinity) arm(delayOrZero(deadline - now()));
 	return handle;
